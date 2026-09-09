@@ -1,0 +1,156 @@
+# Publishes this package to npm as @jetserge/pi-session-recap.
+#
+# Auth is OIDC trusted publishing: no token is stored anywhere, and provenance is
+# attached automatically. This requires a one-time bootstrap, because npm cannot
+# publish a package's FIRST version over OIDC. A trusted publisher is attached
+# from the package settings page, which requires the package to already exist,
+# and npm has no pending-publisher concept (npm/cli#8544 is still open). So 0.5.1
+# goes up once by hand, the trusted publisher is attached, and every release
+# after that runs here with no credential.
+name: Publish package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run every gate and pack the tarball, but do not publish"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Anyone forking this repo inherits the workflow along with the tags. Without
+    # this guard their tag push would try to publish our package name from their
+    # checkout.
+    if: github.repository == 'CrazyCoder/pi-session-recap'
+    name: verify and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # cutting the GitHub release; read alone is enough to publish
+      id-token: write # OIDC auth for trusted publishing, and its provenance attestation
+    env:
+      PKG: "@jetserge/pi-session-recap"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the release guard needs merge-base against the default
+          # branch, which a shallow clone cannot answer.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      # Node 22 ships npm 10, and provenance needs >= 11.5.1. Pinned to the 11.x
+      # line rather than @latest on purpose: npm 12 fails provenance publishing
+      # with "Cannot find module 'sigstore'", found the hard way on another
+      # package of ours. Revisit only once a 12.x release signs correctly.
+      - name: Upgrade npm
+        run: npm install -g npm@11 && npm --version
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Publishing is irreversible: npm refuses to re-publish a version, so a
+      # manual run from an arbitrary branch would permanently burn a version
+      # number on a commit that no tag points at. Require on EVERY publishing
+      # path that the commit being built is exactly what tag v<version> points
+      # to. Event-conditional guards are the hole here, so this is deliberately
+      # not conditioned on the event. A dry run skips it, so the pipeline can
+      # still be exercised from a branch.
+      - name: Guard the release commit
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          if [ "${{ github.event_name }}" = "push" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package version $VERSION"
+            exit 1
+          fi
+          if ! git fetch --no-tags --depth=1 origin "+refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null; then
+            echo "::error::no tag ${TAG} exists; create and push it before publishing ${VERSION}"
+            exit 1
+          fi
+          TAG_SHA="$(git rev-list -n1 "$TAG")"
+          if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::${TAG} points at ${TAG_SHA}, not the commit being built (${GITHUB_SHA})"
+            exit 1
+          fi
+          # A tag can point at any commit, so the check above proves nothing
+          # about which branch that commit is on.
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::commit $GITHUB_SHA is not on origin/main; refusing to publish"
+            exit 1
+          fi
+
+      # Proves the files array actually covers what the extension imports, before
+      # the artifact is immutable on the registry. A missing module here is
+      # unfixable after publish except by burning a version number.
+      - name: Verify the tarball is loadable
+        run: node scripts/verify-tarball.mjs
+
+      # The first version of a package cannot be published over OIDC, so 0.5.1
+      # goes up by hand and its tag is pushed afterwards. That tag runs this
+      # workflow, and npm refuses to replace an existing version, which would
+      # fail the run before it could cut the release. Treat an already-published
+      # version as success instead: every gate above still ran, and the release
+      # step below still fires. This also makes a re-run safe when publishing
+      # succeeded but a later step failed.
+      - name: Check whether this version is already published
+        id: published
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "${PKG}@${VERSION}" version > /dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${PKG}@${VERSION} is already on the registry, skipping publish"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No NODE_AUTH_TOKEN: the OIDC token minted by `id-token: write`
+      # authenticates this run, and trusted publishing attaches provenance on its
+      # own, so passing --provenance explicitly is unnecessary. Fails cleanly,
+      # publishing nothing, if the trusted publisher is not attached yet.
+      - name: Publish
+        if: steps.published.outputs.already == 'false' && (github.event_name == 'push' || inputs.dry_run == false)
+        run: npm publish --access public
+
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if ! gh release view "v${VERSION}" > /dev/null 2>&1; then
+            gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes
+          fi
+
+      - name: Summary
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          {
+            echo "### ${PKG}@${VERSION}"
+            echo ""
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run passed. Nothing was published."
+            elif [ "${{ steps.published.outputs.already }}" = "true" ]; then
+              echo "Already on the registry, publish skipped. Every gate still ran."
+            else
+              echo "Published over OIDC trusted publishing, with provenance."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
