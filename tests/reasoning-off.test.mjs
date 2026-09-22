@@ -68,8 +68,10 @@ function makeCtx(model) {
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
 		},
 		sessionManager: {
+			buildSessionProjection: () => ({
+				entries: branch.map((sourceEntry) => ({ sourceEntry, messages: [sourceEntry.message] })),
+			}),
 			getBranch: () => branch,
-			buildContextEntries: () => branch,
 		},
 		ui: {
 			setStatus() {},

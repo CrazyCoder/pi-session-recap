@@ -7,9 +7,10 @@ import type { Message } from "@earendil-works/pi-ai";
 import { complete, completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
-	sessionEntryToContextMessages,
+	type ContextEditEntry,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ProjectedSessionEntry,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
@@ -61,32 +62,37 @@ function extractText(content: Message["content"]): string {
 		.join("\n");
 }
 
+function findInitialTask(entries: SessionEntry[]): string | undefined {
+	const edits = new Map<string, ContextEditEntry["replacement"]>();
+	for (const entry of entries) {
+		if (entry.type === "context_edit") edits.set(entry.targetId, entry.replacement);
+	}
+
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const replacement = edits.get(entry.id);
+		if (replacement === null) continue;
+		const initialTask = extractText(replacement?.content ?? entry.message.content).trim();
+		if (initialTask) return initialTask;
+	}
+	return undefined;
+}
+
 export function buildRecapContext(
-	contextEntries: SessionEntry[],
+	entries: ProjectedSessionEntry[],
 	branchEntries: SessionEntry[],
 ): RecapContext {
 	let summary: string | undefined;
-	for (let i = contextEntries.length - 1; i >= 0; i--) {
-		const entry = contextEntries[i];
-		const candidate =
-			entry.type === "compaction" || entry.type === "branch_summary" ? entry.summary.trim() : undefined;
-		if (candidate) {
-			summary = candidate;
-			break;
-		}
+	for (const { sourceEntry, messages } of entries) {
+		if (sourceEntry.type !== "compaction" && sourceEntry.type !== "branch_summary") continue;
+		if (messages.length > 0) summary = sourceEntry.summary.trim() || summary;
 	}
-
-	let initialTask: string | undefined;
-	for (const entry of branchEntries) {
-		if (entry.type !== "message" || entry.message.role !== "user") continue;
-		initialTask = extractText(entry.message.content).trim() || undefined;
-		break;
-	}
+	const initialTask = findInitialTask(branchEntries);
 
 	const messages = convertToLlm(
-		contextEntries
-			.filter((entry) => entry.type !== "compaction" && entry.type !== "branch_summary")
-			.flatMap(sessionEntryToContextMessages),
+		entries
+			.filter(({ sourceEntry }) => sourceEntry.type !== "compaction" && sourceEntry.type !== "branch_summary")
+			.flatMap((entry) => entry.messages),
 	).map((message) => {
 		if (message.role !== "toolResult") return message;
 		return {
@@ -133,24 +139,23 @@ export function buildRecapContext(
 	};
 }
 
-function hasMeaningfulActivity(entries: SessionEntry[]): boolean {
+export function hasMeaningfulActivity(entries: ProjectedSessionEntry[]): boolean {
+	const messages = convertToLlm(entries.flatMap((entry) => entry.messages));
 	let lastUserIdx = -1;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const e = entries[i];
-		if (e.type === "message" && e.message.role === "user") {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i]!.role === "user") {
 			lastUserIdx = i;
 			break;
 		}
 	}
-	const tail = lastUserIdx >= 0 ? entries.slice(lastUserIdx + 1) : entries;
+	const tail = lastUserIdx >= 0 ? messages.slice(lastUserIdx + 1) : messages;
 	let assistantWords = 0;
-	let toolCalls = 0;
-	for (const e of tail) {
-		if (e.type !== "message" || e.message.role !== "assistant") continue;
-		assistantWords += extractText(e.message.content).split(/\s+/).filter(Boolean).length;
-		toolCalls += e.message.content.filter((block) => block.type === "toolCall").length;
+	for (const message of tail) {
+		if (message.role !== "assistant") continue;
+		if (message.content.some((block) => block.type === "toolCall")) return true;
+		assistantWords += extractText(message.content).split(/\s+/).filter(Boolean).length;
 	}
-	return toolCalls > 0 || assistantWords >= MIN_ASSISTANT_WORDS;
+	return assistantWords >= MIN_ASSISTANT_WORDS;
 }
 
 export function selectRecapModel(
@@ -373,10 +378,10 @@ export default function (pi: ExtensionAPI) {
 
 	const generateAndShow = async (ctx: ExtensionContext, reason: RecapReason) => {
 		if (!ctx.hasUI) return;
-		const entries = ctx.sessionManager.getBranch();
-		if (reason !== "manual" && !hasMeaningfulActivity(entries)) return;
+		const projection = ctx.sessionManager.buildSessionProjection();
+		if (reason !== "manual" && !hasMeaningfulActivity(projection.entries)) return;
 
-		const recapContext = buildRecapContext(ctx.sessionManager.buildContextEntries(), entries);
+		const recapContext = buildRecapContext(projection.entries, ctx.sessionManager.getBranch());
 		if (recapContext.messages.length === 0 && !recapContext.broaderContext) return;
 
 		const startContext = JSON.stringify(recapContext);
@@ -394,7 +399,7 @@ export default function (pi: ExtensionAPI) {
 			const recap = await generateRecap(recapContext, ctx, override, controller.signal);
 			if (!recap || controller.signal.aborted) return;
 			const currentContext = buildRecapContext(
-				ctx.sessionManager.buildContextEntries(),
+				ctx.sessionManager.buildSessionProjection().entries,
 				ctx.sessionManager.getBranch(),
 			);
 			if (JSON.stringify(currentContext) !== startContext) return;
@@ -544,7 +549,7 @@ export default function (pi: ExtensionAPI) {
 		clearRecap(ctx);
 	});
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => {
 		agentActive = false;
 		if (awayRecapPending) {
 			awayRecapPending = false;

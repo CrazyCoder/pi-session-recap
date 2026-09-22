@@ -4,11 +4,12 @@ Standalone fork of
 [Thomas Mustier's session-recap](https://github.com/tmustier/pi-extensions/tree/main/session-recap),
 published as `@jetserge/pi-session-recap`.
 
-Based on upstream version 0.5.0, with the fixes from
+Based on upstream version 0.5.1 (Pi 0.87 compatibility, upstream commit
+`4a63a2e`), with the fixes from
 [PR #106](https://github.com/tmustier/pi-extensions/pull/106) at commit
 `0c9b116`. Incomplete responses are discarded, and request failures use Pi
 notifications instead of writing over the terminal. The extension source and
-regression tests are preserved from that commit.
+regression tests are preserved from those commits.
 
 "While you were away" recap for Pi, modelled on Claude Code's away-summary. When
 you've genuinely been away from a Pi session, a short recap is drafted while
@@ -78,9 +79,11 @@ reasoning level is requested, and Codex models are sent an explicit
 `reasoningEffort: "none"` because they would otherwise fall back to the
 server-side default.
 
-It uses a 30-message window in native roles, plus the initial request and latest
-compaction or branch summary. Large initial requests and tool results retain
-their beginning and end.
+It uses a 30-message window from Pi's current projected context, plus the
+earliest non-omitted user request on the active branch and the latest active
+compaction or branch summary. Context edits to that request are honoured,
+including replacement and omission. Large initial requests and tool results
+retain their beginning and end.
 
 Custom providers work when they use a built-in pi-ai API type. Pi-only custom
 handlers are skipped because the standalone compatibility layer cannot route
@@ -88,7 +91,7 @@ them; use `--recap-model "<provider>/<id>"` to select a supported model.
 
 ## Install
 
-Requires Node.js 22.18 or newer and Pi with the `@earendil-works` APIs.
+Requires Node.js 22.18 or newer and Pi 0.87.0 or newer.
 
 ```bash
 pi install npm:@jetserge/pi-session-recap

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.2] - 2026-09-22
+
+### Changed
+
+- Merge upstream 0.5.1 (commit `4a63a2e`) for Pi 0.87 compatibility. Pi 0.87.0
+  or newer is now required.
+- Build recaps from Pi 0.87's projected session context, so context edits,
+  omissions and replacements are reflected in both the recent activity and the
+  initial task framing.
+- Wait for the agent to settle before an away recap is generated, including
+  after retries, compaction and queued continuations.
+
 ## [0.5.1] - 2026-09-09
 
 ### Changed
