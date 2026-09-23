@@ -15,7 +15,16 @@ import {
 	type ProjectedSessionEntry,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+	Container,
+	fuzzyFilter,
+	Input,
+	matchesKey,
+	Text,
+	truncateToWidth,
+	type Component,
+	type TUI,
+} from "@earendil-works/pi-tui";
 
 type Model = AiModel<Api>;
 
@@ -247,7 +256,146 @@ function activeOverrideFlags(getFlag: FlagReader): string[] {
 	}).map((name) => `--${name}`);
 }
 
-type ConfigUi = Pick<ExtensionContext["ui"], "select" | "input" | "notify">;
+// ---------------------------------------------------------------------------
+// Model picker: a searchable list sized to the terminal. Pi's `ui.select`
+// draws every option, so a long model list scrolls the terminal itself and
+// hides the selection. Pi's own model selector needs its internal
+// ModelRuntime, which extensions cannot reach.
+// ---------------------------------------------------------------------------
+
+export interface PickerItem {
+	value: string;
+	label: string;
+}
+
+type PickerTheme = { fg(color: string, text: string): string; bold(text: string): string };
+
+// The picker draws two borders, a title, the search line, a scroll-position
+// line and a key hint around the list. Pi's footer and status lines stay
+// below it, so those rows are kept free too.
+const PICKER_CHROME_ROWS = 6;
+const PICKER_RESERVED_ROWS = 6;
+const PICKER_MIN_VISIBLE = 3;
+const PICKER_MAX_VISIBLE = 15;
+const PICKER_HINT = "type to search • ↑↓ PgUp PgDn move • enter select • esc cancel";
+
+export function pickerVisibleRows(terminalRows: number): number {
+	return Math.max(
+		PICKER_MIN_VISIBLE,
+		Math.min(PICKER_MAX_VISIBLE, terminalRows - PICKER_CHROME_ROWS - PICKER_RESERVED_ROWS),
+	);
+}
+
+/**
+ * A searchable list that shows at most `pickerVisibleRows` items and scrolls
+ * inside that window. It opens on `initialValue`, marked with a check.
+ */
+export function createPicker(
+	title: string,
+	items: readonly PickerItem[],
+	initialValue: string | undefined,
+	theme: PickerTheme,
+	terminalRows: () => number,
+	done: (value: string | undefined) => void,
+): Component & { focused: boolean; handleInput(data: string): void } {
+	const input = new Input();
+	input.focused = true;
+	let filtered = [...items];
+	let selected = Math.max(0, filtered.findIndex((item) => item.value === initialValue));
+
+	const refilter = () => {
+		const query = input.getValue();
+		filtered = fuzzyFilter([...items], query, (item) => item.label);
+		selected = query.trim() ? 0 : Math.max(0, filtered.findIndex((item) => item.value === initialValue));
+	};
+	const move = (delta: number, wrap: boolean) => {
+		if (filtered.length === 0) return;
+		const target = selected + delta;
+		if (wrap) selected = (target + filtered.length) % filtered.length;
+		else selected = Math.max(0, Math.min(filtered.length - 1, target));
+	};
+
+	return {
+		get focused() {
+			return input.focused;
+		},
+		set focused(value: boolean) {
+			input.focused = value;
+		},
+		render(width: number): string[] {
+			const visible = pickerVisibleRows(terminalRows());
+			const start = Math.max(0, Math.min(selected - Math.floor(visible / 2), filtered.length - visible));
+			const border = theme.fg("accent", "─".repeat(Math.max(1, width)));
+			const lines = [border, theme.fg("accent", theme.bold(truncateToWidth(title, width))), ...input.render(width)];
+			if (filtered.length === 0) lines.push(theme.fg("muted", "  No matching models"));
+			for (let i = start; i < Math.min(start + visible, filtered.length); i++) {
+				const item = filtered[i]!;
+				const mark = item.value === initialValue ? " ✓" : "";
+				const text = truncateToWidth(`${i === selected ? "→ " : "  "}${item.label}${mark}`, width);
+				lines.push(i === selected ? theme.fg("accent", text) : text);
+			}
+			lines.push(filtered.length > visible ? theme.fg("muted", `  (${selected + 1}/${filtered.length})`) : "");
+			lines.push(theme.fg("dim", truncateToWidth(PICKER_HINT, width)), border);
+			return lines;
+		},
+		invalidate() {
+			input.invalidate();
+		},
+		handleInput(data: string) {
+			if (matchesKey(data, "escape")) done(undefined);
+			else if (matchesKey(data, "enter")) {
+				const item = filtered[selected];
+				if (item) done(item.value);
+			} else if (matchesKey(data, "up")) move(-1, true);
+			else if (matchesKey(data, "down")) move(1, true);
+			else if (matchesKey(data, "pageUp")) move(-pickerVisibleRows(terminalRows()), false);
+			else if (matchesKey(data, "pageDown")) move(pickerVisibleRows(terminalRows()), false);
+			else {
+				input.handleInput(data);
+				refilter();
+			}
+		},
+	};
+}
+
+type PickerUi = Pick<ExtensionContext["ui"], "select"> & Partial<Pick<ExtensionContext["ui"], "custom">>;
+
+/**
+ * Pick one item: the terminal-sized picker in the TUI, Pi's plain select
+ * elsewhere (RPC mode cannot draw custom components). Undefined on cancel.
+ */
+export async function pickItem(
+	ui: PickerUi,
+	tui: boolean,
+	title: string,
+	items: readonly PickerItem[],
+	initialValue: string | undefined,
+): Promise<string | undefined> {
+	if (tui && ui.custom) {
+		return ui.custom<string | undefined>((host, theme, _keybindings, done) => {
+			const picker = createPicker(title, items, initialValue, theme, () => host.terminal.rows, done);
+			return {
+				get focused() {
+					return picker.focused;
+				},
+				set focused(value: boolean) {
+					picker.focused = value;
+				},
+				render: (width: number) => picker.render(width),
+				invalidate: () => picker.invalidate(),
+				handleInput(data: string) {
+					picker.handleInput(data);
+					host.requestRender();
+				},
+			};
+		});
+	}
+	const label = await ui.select(title, items.map((item) => item.label));
+	return items.find((item) => item.label === label)?.value;
+}
+
+type ConfigUi = Pick<ExtensionContext["ui"], "select" | "input" | "notify"> &
+	Partial<Pick<ExtensionContext["ui"], "custom">>;
 
 const AUTOMATIC_MODEL =
 	"automatic — Claude Haiku 4.5 for Claude, GPT-6 Luna for GPT, else the session model";
@@ -262,14 +410,21 @@ export async function configureInteractively(
 	ui: ConfigUi,
 	available: ReadonlyArray<{ provider: string; id: string }>,
 	current: RecapConfig,
+	tui = false,
 ): Promise<RecapConfig | undefined> {
 	const next: RecapConfig = { ...current };
 
-	const currentModel = current.model ? `${current.model.provider}/${current.model.model}` : "automatic";
-	const modelPick = await ui.select(`session-recap: recap model [${currentModel}]`, [
-		AUTOMATIC_MODEL,
-		...available.map((model) => `${model.provider}/${model.id}`),
-	]);
+	const currentModel = current.model ? `${current.model.provider}/${current.model.model}` : undefined;
+	const modelItems = [AUTOMATIC_MODEL, ...available.map((model) => `${model.provider}/${model.id}`)].map(
+		(label) => ({ value: label, label }),
+	);
+	const modelPick = await pickItem(
+		ui,
+		tui,
+		`session-recap: recap model [${currentModel ?? "automatic"}]`,
+		modelItems,
+		currentModel ?? AUTOMATIC_MODEL,
+	);
 	if (modelPick === undefined) return undefined;
 	if (modelPick === AUTOMATIC_MODEL) {
 		delete next.model;
@@ -904,7 +1059,12 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const next = await configureInteractively(ctx.ui, ctx.modelRegistry.getAvailable(), loaded.config);
+			const next = await configureInteractively(
+				ctx.ui,
+				ctx.modelRegistry.getAvailable(),
+				loaded.config,
+				ctx.mode === "tui",
+			);
 			if (!next) return;
 			try {
 				saveConfig(next);

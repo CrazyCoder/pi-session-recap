@@ -8,7 +8,8 @@
   `~/.pi/agent/session-recap.json`: recap model, thinking level, away and idle
   delays, automatic recaps, recaps on `/resume` and `/fork`, recaps while the
   agent runs, recent messages sent, and the output token cap. Command-line flags
-  override the file for one launch.
+  override the file for one launch. Its model picker has fuzzy search, fits the
+  terminal height, and opens on the saved model.
 - Allow reasoning for recaps through the `thinking` setting. It stays off by
   default.
 
