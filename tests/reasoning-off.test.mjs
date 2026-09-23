@@ -1,16 +1,19 @@
-// Recaps must never spend reasoning tokens. `completeSimple` disables thinking
+// Recaps must never spend reasoning tokens. `streamSimple` disables thinking
 // for every API by omitting `reasoning`, except openai-codex-responses, which
 // then inherits the server-side default — that api must get an explicit
-// `reasoningEffort: "none"` through `complete`.
+// `reasoningEffort: "none"` through `stream`.
+//
+// Both go through `ctx.modelRegistry`, Pi's model runtime, which is where
+// extension provider overrides run. pi-anthropic-auth shapes Anthropic OAuth
+// requests there; a recap sent past it is billed as extra usage.
 import assert from "node:assert/strict";
-import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import sessionRecap from "../index.ts";
 
 const calls = [];
 
-function stubStream(kind, api) {
-	return (_model, _context, options) => {
-		calls.push({ kind, api, options });
+function stubStream(kind) {
+	return (model, _context, options) => {
+		calls.push({ kind, api: model.api, options });
 		return {
 			result: async () => ({
 				role: "assistant",
@@ -19,14 +22,6 @@ function stubStream(kind, api) {
 			}),
 		};
 	};
-}
-
-for (const api of ["openai-codex-responses", "anthropic-messages"]) {
-	registerApiProvider({
-		api,
-		stream: stubStream("stream", api),
-		streamSimple: stubStream("streamSimple", api),
-	});
 }
 
 function makePi() {
@@ -66,6 +61,8 @@ function makeCtx(model) {
 			find: () => undefined,
 			getAvailable: () => [],
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
+			stream: stubStream("stream"),
+			streamSimple: stubStream("streamSimple"),
 		},
 		sessionManager: {
 			buildSessionProjection: () => ({
@@ -108,12 +105,17 @@ await recap("", makeCtx(makeModel("anthropic-messages", "claude-haiku-4-5")));
 const codex = calls.find((c) => c.api === "openai-codex-responses");
 const anthropic = calls.find((c) => c.api === "anthropic-messages");
 
-assert.ok(codex, "codex recap should have issued a request");
-assert.equal(codex.kind, "stream", "codex recaps must use complete(), not completeSimple()");
+assert.ok(codex, "codex recap should have issued a request through ctx.modelRegistry");
+assert.equal(codex.kind, "stream", "codex recaps must use stream(), not streamSimple()");
 assert.equal(codex.options.reasoningEffort, "none", "codex recaps must disable reasoning explicitly");
 
-assert.ok(anthropic, "anthropic recap should have issued a request");
-assert.equal(anthropic.kind, "streamSimple", "other apis keep using completeSimple()");
+assert.ok(anthropic, "anthropic recap should have issued a request through ctx.modelRegistry");
+assert.equal(anthropic.kind, "streamSimple", "other apis keep using streamSimple()");
+assert.equal(
+	anthropic.options.apiKey,
+	undefined,
+	"the runtime resolves request auth; a recap must not pin a key that bypasses it",
+);
 assert.equal(
 	anthropic.options.reasoning,
 	undefined,
@@ -122,7 +124,7 @@ assert.equal(
 assert.equal(
 	anthropic.options.reasoningEffort,
 	undefined,
-	"completeSimple has no reasoningEffort option — it would be silently dropped",
+	"streamSimple has no reasoningEffort option — it would be silently dropped",
 );
 
 console.log("reasoning-off test passed");

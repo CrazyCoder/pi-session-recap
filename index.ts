@@ -3,8 +3,7 @@
  * See README.md for triggers, flags, and model selection.
  */
 
-import type { Message } from "@earendil-works/pi-ai";
-import { complete, completeSimple } from "@earendil-works/pi-ai/compat";
+import type { Api, Message, Model as AiModel } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	type ContextEditEntry,
@@ -15,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
 
-type Model = Parameters<typeof completeSimple>[0];
+type Model = AiModel<Api>;
 
 type RecapContext = {
 	messages: Message[];
@@ -36,10 +35,10 @@ const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
 // immediately followed by the next turn_start) don't trigger drafts.
 const POST_TURN_DEBOUNCE_MS = 3000;
 
-// `completeSimple` cannot express "reasoning off": its `reasoning` option only
+// `streamSimple` cannot express "reasoning off": its `reasoning` option only
 // accepts real thinking levels. Omitting it disables thinking on every API we
 // use except openai-codex-responses, which sends no reasoning field at all and
-// so inherits the server-side default. Those models go through `complete` with
+// so inherits the server-side default. Those models go through `stream` with
 // an explicit `reasoningEffort: "none"` instead.
 const NEEDS_EXPLICIT_REASONING_OFF = new Set(["openai-codex-responses"]);
 
@@ -213,27 +212,20 @@ async function generateRecap(
 		],
 	};
 	const options = {
-		apiKey: auth.apiKey,
-		headers: auth.headers,
-		env: auth.env,
 		signal,
 		cacheRetention: "none" as const,
 		maxTokens: 256,
 	};
 
-	let response;
-	try {
-		// Recaps never need reasoning; skipping it keeps each away-timer fire cheap.
-		response = NEEDS_EXPLICIT_REASONING_OFF.has(model.api)
-			? await complete(model, context, { ...options, reasoningEffort: "none" })
-			: await completeSimple(model, context, options);
-	} catch (err) {
-		// completeSimple cannot route custom handlers registered only inside Pi.
-		if (err instanceof Error && err.message.startsWith("No API provider registered for api:")) {
-			return undefined;
-		}
-		throw err;
-	}
+	// Dispatch through Pi's model runtime rather than pi-ai's standalone
+	// `complete*`: the runtime resolves request auth and runs provider overrides
+	// that extensions register, such as the OAuth request shaping an Anthropic
+	// subscription needs. Recaps never need reasoning; skipping it keeps each
+	// away-timer fire cheap.
+	const response = await (NEEDS_EXPLICIT_REASONING_OFF.has(model.api)
+		? ctx.modelRegistry.stream(model, context, { ...options, reasoningEffort: "none" })
+		: ctx.modelRegistry.streamSimple(model, context, options)
+	).result();
 
 	// pi-ai resolves instead of throwing when a stream fails, is aborted, or stops
 	// at the token cap: the message it hands back then holds only the text that

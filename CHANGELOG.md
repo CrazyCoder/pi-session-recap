@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.3] - 2026-09-22
+
+### Fixed
+
+- Send recap requests through Pi's model runtime (`ctx.modelRegistry`) instead
+  of pi-ai's standalone `complete`/`completeSimple`. The standalone path skipped
+  provider overrides that extensions register, so `@gotgenes/pi-anthropic-auth`
+  never shaped recap requests. Anthropic then rejected them for subscription
+  (OAuth) users with `You're out of extra usage`.
+- Route recaps for custom providers whose stream handler is registered only
+  inside Pi. The standalone path could not reach them, so those sessions got no
+  recap.
+
 ## [0.5.2] - 2026-09-22
 
 ### Changed

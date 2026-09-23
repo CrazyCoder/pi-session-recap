@@ -1,24 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import sessionRecap from "../index.ts";
 
 test("recap validation rejects a draft when projected context changes", async () => {
 	const started = Promise.withResolvers();
 	const response = Promise.withResolvers();
-	registerApiProvider({
-		api: "recap-projection-validation",
-		stream: () => {
-			throw new Error("unexpected stream path");
-		},
-		streamSimple: () => ({
-			result: async () => {
-				started.resolve();
-				await response.promise;
-				return { role: "assistant", content: [{ type: "text", text: "Stale recap." }] };
-			},
-		}),
-	});
 
 	let recap;
 	sessionRecap({
@@ -54,6 +40,16 @@ test("recap validation rejects a draft when projected context changes", async ()
 			find: () => undefined,
 			getAvailable: () => [],
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
+			stream: () => {
+				throw new Error("unexpected stream path");
+			},
+			streamSimple: () => ({
+				result: async () => {
+					started.resolve();
+					await response.promise;
+					return { role: "assistant", content: [{ type: "text", text: "Stale recap." }], stopReason: "stop" };
+				},
+			}),
 		},
 		sessionManager: {
 			buildSessionProjection: () => ({

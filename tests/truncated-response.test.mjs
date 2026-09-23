@@ -1,10 +1,9 @@
 // pi-ai resolves rather than throws when a stream fails, is aborted, or stops
-// at the token cap: `complete`/`completeSimple` hand back the partial assistant
+// at the token cap: a stream's `result()` hands back the partial assistant
 // message built so far, holding whatever text arrived before the cut. Rendering
 // that fragment yields a recap of a single dangling word, so each stop reason
 // below pins down what reaches the widget.
 import assert from "node:assert/strict";
-import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import sessionRecap from "../index.ts";
 
 const API = "recap-truncation-test";
@@ -14,8 +13,6 @@ let nextResponse;
 function stubStream(_model, _context, _options) {
 	return { result: async () => nextResponse };
 }
-
-registerApiProvider({ api: API, stream: stubStream, streamSimple: stubStream });
 
 function makePi() {
 	const commands = new Map();
@@ -67,6 +64,8 @@ const ctx = {
 		find: () => undefined,
 		getAvailable: () => [],
 		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unused" }),
+		stream: stubStream,
+		streamSimple: stubStream,
 	},
 	sessionManager: {
 		buildSessionProjection: () => ({

@@ -8,8 +8,9 @@ Based on upstream version 0.5.1 (Pi 0.87 compatibility, upstream commit
 `4a63a2e`), with the fixes from
 [PR #106](https://github.com/tmustier/pi-extensions/pull/106) at commit
 `0c9b116`. Incomplete responses are discarded, and request failures use Pi
-notifications instead of writing over the terminal. The extension source and
-regression tests are preserved from those commits.
+notifications instead of writing over the terminal. This fork also sends recap
+requests through Pi's model runtime, so Anthropic subscription (OAuth) users are
+not billed for extra usage.
 
 "While you were away" recap for Pi, modelled on Claude Code's away-summary. When
 you've genuinely been away from a Pi session, a short recap is drafted while
@@ -53,12 +54,12 @@ helps.
 
 ## Terminal compatibility
 
-| Terminal                                          | Focus reporting  | Notes                                                                                 |
-| ------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------- |
-| iTerm2, Ghostty, Alacritty, Kitty, WezTerm, xterm | ✅               | Works out of the box.                                                                 |
-| VS Code integrated terminal, Warp                 | ✅               | Works.                                                                                |
-| Apple Terminal                                    | ⚠️ Partial       | Idle fallback covers it.                                                              |
-| tmux                                              | ✅ (with config) | Add `set -g focus-events on` to `~/.tmux.conf`, then `tmux source-file ~/.tmux.conf`. |
+| Terminal | Focus reporting | Notes |
+| -- | -- | -- |
+| iTerm2, Ghostty, Alacritty, Kitty, WezTerm, xterm | ✅ | Works out of the box. |
+| VS Code integrated terminal, Warp | ✅ | Works. |
+| Apple Terminal | ⚠️ Partial | Idle fallback covers it. |
+| tmux | ✅ (with config) | Add `set -g focus-events on` to `~/.tmux.conf`, then `tmux source-file ~/.tmux.conf`. |
 
 If focus events cause any weirdness in your terminal, run with
 `--recap-disable-focus` and the idle fallback still works.
@@ -85,9 +86,12 @@ compaction or branch summary. Context edits to that request are honoured,
 including replacement and omission. Large initial requests and tool results
 retain their beginning and end.
 
-Custom providers work when they use a built-in pi-ai API type. Pi-only custom
-handlers are skipped because the standalone compatibility layer cannot route
-them; use `--recap-model "<provider>/<id>"` to select a supported model.
+The request goes through Pi's model runtime, the same path as agent turns. Auth
+comes from Pi, and provider extensions apply to recaps too. This includes custom
+providers with their own stream handlers and
+[`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth).
+That extension shapes Anthropic OAuth requests; without it Anthropic bills them
+as extra usage instead of against the subscription.
 
 ## Install
 
@@ -111,19 +115,19 @@ For a local checkout, run `npm ci` in this repository, then run `pi install .`.
 
 ## Flags
 
-| Flag                       | Default   | Description                                                                                          |
-| -------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| `--recap-away-seconds <n>` | `90`      | Seconds of continuous terminal blur before an away recap is generated.                               |
-| `--recap-idle-seconds <n>` | `120`     | Idle-fallback delay after `turn_end`, used only when the terminal doesn't report focus.              |
-| `--recap-disable-focus`    | `false`   | Disable DECSET `?1004` focus reporting. Idle fallback still runs.                                    |
-| `--recap-during-active`    | `false`   | Allow away recaps while an agent turn is still running, instead of deferring to the end of the turn. |
-| `--recap-disable`          | `false`   | Disable the automatic recap entirely. `/recap` still works.                                          |
-| `--recap-model "<p/id>"`   | automatic | Override model selection, e.g. `anthropic/claude-sonnet-4-6`.                                        |
+| Flag | Default | Description |
+| -- | -- | -- |
+| `--recap-away-seconds <n>` | `90` | Seconds of continuous terminal blur before an away recap is generated. |
+| `--recap-idle-seconds <n>` | `120` | Idle-fallback delay after `turn_end`, used only when the terminal doesn't report focus. |
+| `--recap-disable-focus` | `false` | Disable DECSET `?1004` focus reporting. Idle fallback still runs. |
+| `--recap-during-active` | `false` | Allow away recaps while an agent turn is still running, instead of deferring to the end of the turn. |
+| `--recap-disable` | `false` | Disable the automatic recap entirely. `/recap` still works. |
+| `--recap-model "<p/id>"` | automatic | Override model selection, e.g. `anthropic/claude-sonnet-4-6`. |
 
 ## Command
 
-| Command  | Description                                                    |
-| -------- | -------------------------------------------------------------- |
+| Command | Description |
+| -- | -- |
 | `/recap` | Force-generate a recap right now, bypassing the activity gate. |
 
 ## Development and releases
