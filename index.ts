@@ -18,8 +18,8 @@ import {
 import {
 	Container,
 	fuzzyFilter,
+	getKeybindings,
 	Input,
-	matchesKey,
 	Text,
 	truncateToWidth,
 	type Component,
@@ -342,14 +342,16 @@ export function createPicker(
 			input.invalidate();
 		},
 		handleInput(data: string) {
-			if (matchesKey(data, "escape")) done(undefined);
-			else if (matchesKey(data, "enter")) {
+			// The user's own select bindings, as Pi's selectors use them.
+			const keys = getKeybindings();
+			if (keys.matches(data, "tui.select.cancel")) done(undefined);
+			else if (keys.matches(data, "tui.select.confirm")) {
 				const item = filtered[selected];
 				if (item) done(item.value);
-			} else if (matchesKey(data, "up")) move(-1, true);
-			else if (matchesKey(data, "down")) move(1, true);
-			else if (matchesKey(data, "pageUp")) move(-pickerVisibleRows(terminalRows()), false);
-			else if (matchesKey(data, "pageDown")) move(pickerVisibleRows(terminalRows()), false);
+			} else if (keys.matches(data, "tui.select.up")) move(-1, true);
+			else if (keys.matches(data, "tui.select.down")) move(1, true);
+			else if (keys.matches(data, "tui.select.pageUp")) move(-pickerVisibleRows(terminalRows()), false);
+			else if (keys.matches(data, "tui.select.pageDown")) move(pickerVisibleRows(terminalRows()), false);
 			else {
 				input.handleInput(data);
 				refilter();

@@ -70,10 +70,13 @@ test("arrows wrap and page keys move a page", () => {
 	assert.equal(selectedLine(), `→ provider-${pickerVisibleRows(24) % 4}/model-${pickerVisibleRows(24)}`);
 });
 
-test("Escape cancels; Enter on no match does nothing", () => {
+test("Escape and Ctrl+C cancel; Enter on no match does nothing", () => {
 	const cancelled = open();
 	cancelled.type(ESCAPE);
 	assert.deepEqual(cancelled.results, [undefined]);
+	const interrupted = open();
+	interrupted.type("\x03");
+	assert.deepEqual(interrupted.results, [undefined], "Pi's default select bindings cancel on Ctrl+C too");
 
 	const empty = open();
 	empty.type("z", "z", "z", ENTER);
