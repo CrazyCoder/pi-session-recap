@@ -7,6 +7,7 @@ import sessionRecap, {
 	configureInteractively,
 	loadConfig,
 	parseConfig,
+	recapMaxTokens,
 	resolveSettings,
 	saveConfig,
 } from "../index.ts";
@@ -326,6 +327,32 @@ test("thinking on a Codex model uses streamSimple with a reasoning level", async
 	assert.equal(calls[0].kind, "streamSimple", "thinking replaces the explicit reasoning-off stream() path");
 	assert.equal(calls[0].options.reasoning, "low");
 	assert.equal(calls[0].options.reasoningEffort, undefined);
+	assert.equal(calls[0].options.maxTokens, 256 + 2048, "the default text cap plus the low reasoning allowance");
+});
+
+test("recapMaxTokens adds a reasoning allowance only where reasoning shares the cap", () => {
+	const responses = { api: "openai-responses", reasoning: true, maxTokens: 128_000 };
+	assert.equal(recapMaxTokens(responses, { maxTokens: 256 }), 256, "no thinking, no allowance");
+	assert.equal(recapMaxTokens(responses, { thinking: "minimal", maxTokens: 256 }), 256 + 1024);
+	assert.equal(recapMaxTokens(responses, { thinking: "medium", maxTokens: 512 }), 512 + 8192);
+	assert.equal(recapMaxTokens(responses, { thinking: "high", maxTokens: 256 }), 256 + 16384);
+	for (const api of ["anthropic-messages", "bedrock-converse-stream"]) {
+		assert.equal(
+			recapMaxTokens({ api, reasoning: true, maxTokens: 64_000 }, { thinking: "high", maxTokens: 256 }),
+			256,
+			`pi-ai adds the thinking budget itself on ${api}`,
+		);
+	}
+	assert.equal(
+		recapMaxTokens({ ...responses, reasoning: false }, { thinking: "high", maxTokens: 256 }),
+		256,
+		"a model that cannot reason ignores the thinking level",
+	);
+	assert.equal(
+		recapMaxTokens({ ...responses, maxTokens: 4096 }, { thinking: "high", maxTokens: 256 }),
+		4096,
+		"never above the model's own output limit",
+	);
 });
 
 test("recentMessages narrows the conversation sent with the request", async () => {
@@ -393,7 +420,7 @@ test("/recap-config saves the file and the next recap uses it", async () => {
 	assert.equal(calls[0].kind, "streamSimple");
 	assert.equal(calls[0].model, "anthropic/claude-sonnet-5");
 	assert.equal(calls[0].options.reasoning, "medium");
-	assert.equal(calls[0].options.maxTokens, 1024);
+	assert.equal(calls[0].options.maxTokens, 1024, "on Anthropic pi-ai adds the thinking budget, so the cap is sent as saved");
 });
 
 test("session_start loads the file and reports its warnings", async () => {
@@ -428,7 +455,7 @@ test("/recap-config refuses to overwrite a file it cannot parse", async () => {
 	assert.equal(readFileSync(configFile, "utf-8"), "{ not json");
 });
 
-test("/recap-config warns about overriding flags and a low cap with thinking on", async () => {
+test("/recap-config warns about overriding flags", async () => {
 	rmSync(configFile, { force: true });
 	const pi = makePi({ "recap-model": "anthropic/claude-sonnet-5", "recap-disable-focus": true });
 	sessionRecap(pi);
@@ -440,11 +467,8 @@ test("/recap-config warns about overriding flags and a low cap with thinking on"
 	assert.match(notices[0][0], /Recaps in this session use anthropic\/claude-sonnet-5/, "the flag decides the model");
 	assert.deepEqual(
 		notices.slice(1).map(([message, type]) => [message.replace(/^session-recap: /, "").split(" ")[0], type]),
-		[
-			["on", "warning"],
-			["--recap-model", "warning"],
-		],
-		"a thinking warning, then the one overriding flag; --recap-disable-focus overrides no setting",
+		[["--recap-model", "warning"]],
+		"only the overriding flag; --recap-disable-focus overrides no setting, and thinking needs no warning",
 	);
 });
 

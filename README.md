@@ -154,14 +154,14 @@ default.
 | Setting | Default | Description |
 | -- | -- | -- |
 | `model` | automatic | `{ "provider", "model" }`. Automatic selection is described in [Model](#model). A model that cannot be found falls back to the session model. |
-| `thinking` | off | `minimal`, `low`, `medium` or `high`. On OpenAI models reasoning tokens count toward `maxTokens`, so raise it with thinking on. A response cut off at the cap is discarded. |
+| `thinking` | off | `minimal`, `low`, `medium` or `high`. Reasoning gets its own token allowance, so `maxTokens` needs no change; see below. |
 | `awaySeconds` | `90` | Seconds of continuous terminal blur before an away recap is generated. 5 to 86400. |
 | `idleSeconds` | `120` | Idle-fallback delay after `turn_end`, used only when the terminal doesn't report focus. 5 to 86400. |
 | `autoRecap` | `true` | Automatic recaps. With `false`, only `/recap` draws a recap. |
 | `recapOnResume` | `true` | Recap automatically on `/resume` and `/fork`. Needs `autoRecap`. |
 | `duringActive` | `false` | Draft an away recap while an agent turn is still running, instead of waiting for the turn to end. |
 | `recentMessages` | `30` | Recent conversation messages sent with the recap request. 1 to 200. |
-| `maxTokens` | `256` | Output token cap for the recap response. 64 to 8192. |
+| `maxTokens` | `256` | Token cap for the recap text. 64 to 8192. With `thinking` on, a provider that counts reasoning against the cap gets pi-ai's thinking budget for that level added on top: 1024, 2048, 8192 or 16384 tokens, never beyond the model's own output limit. Claude needs nothing extra, because pi-ai adds that budget itself. OpenAI Codex requests carry no cap at all. |
 
 Invalid or unknown settings are ignored, with a warning when the session starts.
 `/recap-config` refuses to overwrite a file that is not valid JSON.

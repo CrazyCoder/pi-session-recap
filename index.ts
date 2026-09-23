@@ -59,6 +59,18 @@ const POST_TURN_DEBOUNCE_MS = 3000;
 // an explicit `reasoningEffort: "none"` instead.
 const NEEDS_EXPLICIT_REASONING_OFF = new Set(["openai-codex-responses"]);
 
+// `maxTokens` caps the recap text. Where reasoning is drawn from the same cap,
+// a recap with `thinking` on gets this allowance on top, so the answer is not
+// crowded out and discarded as cut off. The values are pi-ai's own default
+// thinking budgets (DEFAULT_THINKING_BUDGETS, not exported), which pi-ai adds on
+// top of the cap itself for the APIs below. tests/pi-ai-budgets.test.mjs checks
+// both against the installed pi-ai.
+export const REASONING_ALLOWANCE = { minimal: 1024, low: 2048, medium: 8192, high: 16384 } as const;
+export const THINKING_BUDGET_ADDED_BY_PI_AI: ReadonlySet<string> = new Set([
+	"anthropic-messages",
+	"bedrock-converse-stream",
+]);
+
 const RECENT_MESSAGE_WINDOW = 30;
 const DEFAULT_MAX_TOKENS = 256;
 const MIN_ASSISTANT_WORDS = 30;
@@ -99,7 +111,7 @@ export interface RecapConfig {
 	duringActive?: boolean;
 	/** Recent conversation messages sent with the recap request. */
 	recentMessages?: number;
-	/** Output token cap for the recap response. */
+	/** Token cap for the recap text. Reasoning gets its own allowance; see `recapMaxTokens`. */
 	maxTokens?: number;
 }
 
@@ -533,7 +545,12 @@ export async function configureInteractively(
 		"wait until the agent finishes",
 	);
 	await askInteger("recentMessages", "recent messages sent with the request", RECENT_MESSAGES_RANGE, RECENT_MESSAGE_WINDOW);
-	await askInteger("maxTokens", "recap output token cap", MAX_TOKENS_RANGE, DEFAULT_MAX_TOKENS);
+	await askInteger(
+		"maxTokens",
+		"token cap for the recap text (reasoning is allowed for separately)",
+		MAX_TOKENS_RANGE,
+		DEFAULT_MAX_TOKENS,
+	);
 
 	return next;
 }
@@ -669,6 +686,22 @@ export function selectRecapModel(
 	return activeModel;
 }
 
+/**
+ * The output cap sent with a recap request: `maxTokens` for the text, plus a
+ * reasoning allowance where reasoning counts against the cap. Never above the
+ * model's own output limit.
+ */
+export function recapMaxTokens(
+	model: Pick<Model, "api" | "reasoning" | "maxTokens">,
+	settings: Pick<RecapSettings, "thinking" | "maxTokens">,
+): number {
+	if (!settings.thinking || !model.reasoning || THINKING_BUDGET_ADDED_BY_PI_AI.has(model.api)) {
+		return settings.maxTokens;
+	}
+	const total = settings.maxTokens + REASONING_ALLOWANCE[settings.thinking];
+	return model.maxTokens > 0 ? Math.min(total, model.maxTokens) : total;
+}
+
 async function generateRecap(
 	recapContext: RecapContext,
 	ctx: ExtensionContext,
@@ -704,7 +737,7 @@ async function generateRecap(
 	const options = {
 		signal,
 		cacheRetention: "none" as const,
-		maxTokens: settings.maxTokens,
+		maxTokens: recapMaxTokens(model, settings),
 	};
 
 	// Dispatch through Pi's model runtime rather than pi-ai's standalone
@@ -1104,14 +1137,6 @@ export default function (pi: ExtensionAPI) {
 			const model = selectRecapModel(ctx.model, settings().model, ctx.modelRegistry);
 			const uses = model ? `${model.provider}/${model.id}` : "the session model";
 			ctx.ui.notify(`session-recap: saved ${configPath()}. Recaps in this session use ${uses}.`, "info");
-			if (next.thinking && (next.maxTokens ?? DEFAULT_MAX_TOKENS) < 1024) {
-				// Anthropic budgets add thinking on top of the cap; OpenAI reasoning is
-				// drawn from it, and a response cut off at the cap is discarded.
-				ctx.ui.notify(
-					"session-recap: on OpenAI models reasoning tokens count toward the output cap. Raise it if recaps stop appearing.",
-					"warning",
-				);
-			}
 			const overrides = activeOverrideFlags(getFlag);
 			if (overrides.length > 0) {
 				ctx.ui.notify(

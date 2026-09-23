@@ -12,7 +12,9 @@
   the terminal height. Every choice opens on the saved value, so pressing Enter
   through the walkthrough keeps the settings.
 - Allow reasoning for recaps through the `thinking` setting. It stays off by
-  default.
+  default. `maxTokens` caps the recap text; where a provider counts reasoning
+  against the cap, the request adds pi-ai's thinking budget for the level, so
+  reasoning cannot crowd out the answer.
 
 ### Changed
 
