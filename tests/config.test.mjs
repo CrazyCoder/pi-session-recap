@@ -14,6 +14,9 @@ import sessionRecap, {
 const agentDir = mkdtempSync(join(tmpdir(), "recap-config-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
 test.after(() => rmSync(agentDir, { recursive: true, force: true }));
+// The extension's own settings file. Tests that touch it write or remove it
+// first, so none depends on what an earlier test left behind.
+const configFile = join(agentDir, "session-recap.json");
 
 const noFlags = () => undefined;
 const flags = (values) => (name) => values[name];
@@ -263,10 +266,10 @@ function model(provider, id, api = "anthropic-messages") {
 	};
 }
 
-function makeCtx(ui, calls) {
-	const models = [model("anthropic", "claude-opus-5-5"), model("anthropic", "claude-sonnet-5")];
-	const record = (kind) => (requestModel, _context, options) => {
-		calls.push({ kind, model: `${requestModel.provider}/${requestModel.id}`, options });
+function makeCtx(ui, calls, { active = model("anthropic", "claude-opus-5-5"), entries = branch } = {}) {
+	const models = [active, model("anthropic", "claude-sonnet-5")];
+	const record = (kind) => (requestModel, context, options) => {
+		calls.push({ kind, model: `${requestModel.provider}/${requestModel.id}`, context, options });
 		return {
 			result: async () => ({
 				role: "assistant",
@@ -277,7 +280,7 @@ function makeCtx(ui, calls) {
 	};
 	return {
 		hasUI: true,
-		model: models[0],
+		model: active,
 		modelRegistry: {
 			find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
 			getAvailable: () => models,
@@ -287,12 +290,13 @@ function makeCtx(ui, calls) {
 		},
 		sessionManager: {
 			buildSessionProjection: () => ({
-				entries: branch.map((sourceEntry) => ({ sourceEntry, messages: [sourceEntry.message] })),
+				entries: entries.map((sourceEntry) => ({ sourceEntry, messages: [sourceEntry.message] })),
 			}),
-			getBranch: () => branch,
+			getBranch: () => entries,
 		},
 		ui: {
 			setStatus() {},
+			notify() {},
 			setWidget(_key, content) {
 				if (typeof content === "function") content({ mode: "regular", children: [] }, this.theme);
 			},
@@ -302,7 +306,62 @@ function makeCtx(ui, calls) {
 	};
 }
 
+/** Save `config`, start a session with it, and return the recorded requests. */
+function startSession(config, ctxOptions, reason = "startup") {
+	saveConfig(config, configFile);
+	const pi = makePi();
+	sessionRecap(pi);
+	const calls = [];
+	const ctx = makeCtx({}, calls, ctxOptions);
+	pi.handlers.get("session_start")({ reason }, ctx);
+	return { pi, ctx, calls };
+}
+
+test("thinking on a Codex model uses streamSimple with a reasoning level", async () => {
+	const { pi, ctx, calls } = startSession(
+		{ thinking: "low" },
+		{ active: model("openai-codex", "gpt-6-luna", "openai-codex-responses") },
+	);
+	await pi.commands.get("recap").handler("", ctx);
+	assert.equal(calls[0].kind, "streamSimple", "thinking replaces the explicit reasoning-off stream() path");
+	assert.equal(calls[0].options.reasoning, "low");
+	assert.equal(calls[0].options.reasoningEffort, undefined);
+});
+
+test("recentMessages narrows the conversation sent with the request", async () => {
+	const narrow = startSession({ recentMessages: 1 });
+	await narrow.pi.commands.get("recap").handler("", narrow.ctx);
+	assert.equal(narrow.calls[0].context.messages[0].content, "(Earlier conversation omitted.)");
+
+	const full = startSession({});
+	await full.pi.commands.get("recap").handler("", full.ctx);
+	assert.equal(full.calls[0].context.messages[0].content, "Please fix the bridge integration.");
+});
+
+const activeBranch = [
+	branch[0],
+	{
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "bridge.ts" } }],
+		},
+	},
+];
+const afterResumeDelay = () => new Promise((resolve) => setTimeout(resolve, 500));
+
+test("recapOnResume controls the recap on /resume", async () => {
+	const on = startSession({}, { entries: activeBranch }, "resume");
+	await afterResumeDelay();
+	assert.equal(on.calls.length, 1, "the default recaps a resumed session");
+
+	const off = startSession({ recapOnResume: false }, { entries: activeBranch }, "resume");
+	await afterResumeDelay();
+	assert.equal(off.calls.length, 0, "recapOnResume: false skips it");
+});
+
 test("/recap-config saves the file and the next recap uses it", async () => {
+	rmSync(configFile, { force: true });
 	const pi = makePi();
 	sessionRecap(pi);
 	const calls = [];
@@ -321,7 +380,7 @@ test("/recap-config saves the file and the next recap uses it", async () => {
 	const ctx = makeCtx({ ...ui, notify: (message, type) => notices.push([message, type]) }, calls);
 
 	await pi.commands.get("recap-config").handler("", ctx);
-	const saved = JSON.parse(readFileSync(join(agentDir, "session-recap.json"), "utf-8"));
+	const saved = JSON.parse(readFileSync(configFile, "utf-8"));
 	assert.deepEqual(saved, {
 		model: { provider: "anthropic", model: "claude-sonnet-5" },
 		thinking: "medium",
@@ -338,7 +397,7 @@ test("/recap-config saves the file and the next recap uses it", async () => {
 });
 
 test("session_start loads the file and reports its warnings", async () => {
-	writeFileSync(join(agentDir, "session-recap.json"), JSON.stringify({ thinking: "low", colour: "blue" }));
+	writeFileSync(configFile, JSON.stringify({ thinking: "low", colour: "blue" }));
 	const pi = makePi();
 	sessionRecap(pi);
 	const calls = [];
@@ -356,7 +415,7 @@ test("session_start loads the file and reports its warnings", async () => {
 });
 
 test("/recap-config refuses to overwrite a file it cannot parse", async () => {
-	const path = join(agentDir, "session-recap.json");
+	const path = configFile;
 	writeFileSync(path, "{ not json");
 	const pi = makePi();
 	sessionRecap(pi);

@@ -126,9 +126,10 @@ value is shown in brackets. An empty or cancelled answer keeps it. Cancelling
 the first dialog discards the whole walkthrough.
 
 The settings are saved to `~/.pi/agent/session-recap.json`, in the directory
-named by `PI_CODING_AGENT_DIR` when that is set. They apply at once, with no
-reload. There is no per-project file. The recap model receives your transcript,
-so a repository must not be able to redirect it.
+named by `PI_CODING_AGENT_DIR` when that is set. They apply at once in the
+session that saved them. Other open Pi sessions read the file at their next
+session start. There is no per-project file. The recap model receives your
+transcript, so a repository must not be able to redirect it.
 
 ```json
 {

@@ -1,4 +1,5 @@
-// Recaps must never spend reasoning tokens. `streamSimple` disables thinking
+// Recaps spend no reasoning tokens unless the `thinking` setting asks for them
+// (covered in config.test.mjs). `streamSimple` disables thinking
 // for every API by omitting `reasoning`, except openai-codex-responses, which
 // then inherits the server-side default — that api must get an explicit
 // `reasoningEffort: "none"` through `stream`.

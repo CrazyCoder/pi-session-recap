@@ -1,6 +1,6 @@
 /**
  * Drafts a short Claude Code-style recap after the user has been away.
- * See README.md for triggers, flags, and model selection.
+ * See README.md for triggers, settings, flags, and model selection.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,7 +36,7 @@ const ANTHROPIC_RECAP_MODEL = "claude-haiku-4-5";
 const CLAUDE_MODEL_ID = /^claude-/;
 const GPT_MODEL_ID = /(?:^|\/)gpt-/;
 // In order of preference: GPT-6 Luna, then GPT-5.6 Luna on providers that do
-// not offer GPT-6 yet.
+// not offer GPT-6 Luna.
 const LUNA_RECAP_MODELS = [/(?:^|\/)gpt-6-luna(?:$|[@:])/, /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/];
 
 // Debounce after a turn ends while blurred, so mid-loop turn_ends (which are

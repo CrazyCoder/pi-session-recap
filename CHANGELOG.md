@@ -31,6 +31,8 @@
 - Route recaps for custom providers whose stream handler is registered only
   inside Pi. The standalone path could not reach them, so those sessions got no
   recap.
+- Show recaps in RPC mode. RPC mode never calls widget factories, so every recap
+  there ended in an error notification after a successful request.
 
 ## [0.5.2] - 2026-09-22
 
