@@ -75,7 +75,8 @@ model when available:
 2. `claude-haiku-4-5` for Anthropic sessions, and for sessions on a native
    Claude model id (`claude-...`) whose provider also offers `claude-haiku-4-5`,
    such as an Anthropic-compatible proxy.
-3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
+3. GPT-6 Luna when the active model is GPT and its provider offers it, or
+   GPT-5.6 Luna when the provider offers only that.
 4. The currently active model otherwise.
 
 The recap sends no system prompt, no tools and no Agent Skills, and never writes

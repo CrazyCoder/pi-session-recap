@@ -24,11 +24,30 @@ test("Anthropic sessions use Claude Haiku 4.5", () => {
 });
 
 for (const [provider, activeId, lunaId] of [
+	["openai-codex", "gpt-6-sol", "gpt-6-luna"],
+	["openrouter", "openai/gpt-6-sol", "openai/gpt-6-luna"],
+	["cursor", "gpt-6-sol@1m", "gpt-6-luna@1m"],
+]) {
+	test(`${provider} GPT sessions use GPT-6 Luna`, () => {
+		const active = model(provider, activeId);
+		const luna = model(provider, lunaId);
+		assert.equal(select(active, [luna]), luna);
+	});
+}
+
+test("GPT-6 Luna is preferred over GPT-5.6 Luna", () => {
+	const active = model("openai-codex", "gpt-5.6-sol");
+	const luna6 = model("openai-codex", "gpt-6-luna");
+	const luna56 = model("openai-codex", "gpt-5.6-luna");
+	assert.equal(select(active, [luna56, luna6]), luna6);
+});
+
+for (const [provider, activeId, lunaId] of [
 	["openai-codex", "gpt-5.6-sol", "gpt-5.6-luna"],
 	["openrouter", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna"],
 	["cursor", "gpt-5-6-sol@1m", "gpt-5-6-luna@1m"],
 ]) {
-	test(`${provider} GPT sessions use GPT-5.6 Luna`, () => {
+	test(`${provider} falls back to GPT-5.6 Luna without GPT-6 Luna`, () => {
 		const active = model(provider, activeId);
 		const luna = model(provider, lunaId);
 		assert.equal(select(active, [luna]), luna);

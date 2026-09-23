@@ -35,7 +35,9 @@ const ANTHROPIC_RECAP_MODEL = "claude-haiku-4-5";
 // namespace (OpenRouter's `anthropic/claude-...`) do not match.
 const CLAUDE_MODEL_ID = /^claude-/;
 const GPT_MODEL_ID = /(?:^|\/)gpt-/;
-const LUNA_RECAP_MODEL = /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/;
+// In order of preference: GPT-6 Luna, then GPT-5.6 Luna on providers that do
+// not offer GPT-6 yet.
+const LUNA_RECAP_MODELS = [/(?:^|\/)gpt-6-luna(?:$|[@:])/, /(?:^|\/)gpt-5[.-]6-luna(?:$|[@:])/];
 
 // Debounce after a turn ends while blurred, so mid-loop turn_ends (which are
 // immediately followed by the next turn_start) don't trigger drafts.
@@ -248,7 +250,7 @@ function activeOverrideFlags(getFlag: FlagReader): string[] {
 type ConfigUi = Pick<ExtensionContext["ui"], "select" | "input" | "notify">;
 
 const AUTOMATIC_MODEL =
-	"automatic — Claude Haiku 4.5 for Claude, GPT-5.6 Luna for GPT, else the session model";
+	"automatic — Claude Haiku 4.5 for Claude, GPT-6 Luna for GPT, else the session model";
 
 /**
  * Walk through every setting with Pi dialogs. Returns the complete new config,
@@ -479,7 +481,11 @@ export function selectRecapModel(
 		return available.find((model) => model.id === ANTHROPIC_RECAP_MODEL) ?? activeModel;
 	}
 	if (!GPT_MODEL_ID.test(activeModel.id)) return activeModel;
-	return available.find((model) => LUNA_RECAP_MODEL.test(model.id)) ?? activeModel;
+	for (const luna of LUNA_RECAP_MODELS) {
+		const match = available.find((model) => luna.test(model.id));
+		if (match) return match;
+	}
+	return activeModel;
 }
 
 async function generateRecap(

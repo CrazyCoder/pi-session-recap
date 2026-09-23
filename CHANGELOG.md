@@ -18,6 +18,8 @@
   (`claude-...`) whose provider offers `claude-haiku-4-5`, not only on the
   `anthropic` provider. Anthropic-compatible proxies such as Meridian now get
   the cheaper model too.
+- Prefer GPT-6 Luna for recaps of GPT sessions. GPT-5.6 Luna is used when the
+  provider does not offer GPT-6 Luna.
 
 ### Fixed
 
