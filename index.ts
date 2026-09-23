@@ -257,15 +257,21 @@ function activeOverrideFlags(getFlag: FlagReader): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Model picker: a searchable list sized to the terminal. Pi's `ui.select`
-// draws every option, so a long model list scrolls the terminal itself and
-// hides the selection. Pi's own model selector needs its internal
+// Picker for every choice in /recap-config. Pi's `ui.select` always opens on
+// its first option, so pressing Enter through the dialogs changed settings,
+// and it draws every option, so a long model list scrolls the terminal itself
+// and hides the selection. Pi's own model selector needs its internal
 // ModelRuntime, which extensions cannot reach.
 // ---------------------------------------------------------------------------
 
 export interface PickerItem {
 	value: string;
 	label: string;
+}
+
+export interface PickerOptions {
+	/** Show a search line and filter as the user types. For long lists. */
+	search?: boolean;
 }
 
 type PickerTheme = { fg(color: string, text: string): string; bold(text: string): string };
@@ -277,7 +283,8 @@ const PICKER_CHROME_ROWS = 6;
 const PICKER_RESERVED_ROWS = 6;
 const PICKER_MIN_VISIBLE = 3;
 const PICKER_MAX_VISIBLE = 15;
-const PICKER_HINT = "type to search • ↑↓ PgUp PgDn move • enter select • esc cancel";
+const PICKER_HINT = "↑↓ PgUp PgDn move • enter select • esc cancel";
+const PICKER_SEARCH_HINT = `type to search • ${PICKER_HINT}`;
 
 export function pickerVisibleRows(terminalRows: number): number {
 	return Math.max(
@@ -287,8 +294,8 @@ export function pickerVisibleRows(terminalRows: number): number {
 }
 
 /**
- * A searchable list that shows at most `pickerVisibleRows` items and scrolls
- * inside that window. It opens on `initialValue`, marked with a check.
+ * A list that shows at most `pickerVisibleRows` items and scrolls inside that
+ * window. It opens on `initialValue`, marked with a check, so Enter keeps it.
  */
 export function createPicker(
 	title: string,
@@ -297,6 +304,7 @@ export function createPicker(
 	theme: PickerTheme,
 	terminalRows: () => number,
 	done: (value: string | undefined) => void,
+	{ search = false }: PickerOptions = {},
 ): Component & { focused: boolean; handleInput(data: string): void } {
 	const input = new Input();
 	input.focused = true;
@@ -326,8 +334,9 @@ export function createPicker(
 			const visible = pickerVisibleRows(terminalRows());
 			const start = Math.max(0, Math.min(selected - Math.floor(visible / 2), filtered.length - visible));
 			const border = theme.fg("accent", "─".repeat(Math.max(1, width)));
-			const lines = [border, theme.fg("accent", theme.bold(truncateToWidth(title, width))), ...input.render(width)];
-			if (filtered.length === 0) lines.push(theme.fg("muted", "  No matching models"));
+			const lines = [border, theme.fg("accent", theme.bold(truncateToWidth(title, width)))];
+			if (search) lines.push(...input.render(width));
+			if (filtered.length === 0) lines.push(theme.fg("muted", "  No matches"));
 			for (let i = start; i < Math.min(start + visible, filtered.length); i++) {
 				const item = filtered[i]!;
 				const mark = item.value === initialValue ? " ✓" : "";
@@ -335,7 +344,7 @@ export function createPicker(
 				lines.push(i === selected ? theme.fg("accent", text) : text);
 			}
 			lines.push(filtered.length > visible ? theme.fg("muted", `  (${selected + 1}/${filtered.length})`) : "");
-			lines.push(theme.fg("dim", truncateToWidth(PICKER_HINT, width)), border);
+			lines.push(theme.fg("dim", truncateToWidth(search ? PICKER_SEARCH_HINT : PICKER_HINT, width)), border);
 			return lines;
 		},
 		invalidate() {
@@ -352,7 +361,7 @@ export function createPicker(
 			else if (keys.matches(data, "tui.select.down")) move(1, true);
 			else if (keys.matches(data, "tui.select.pageUp")) move(-pickerVisibleRows(terminalRows()), false);
 			else if (keys.matches(data, "tui.select.pageDown")) move(pickerVisibleRows(terminalRows()), false);
-			else {
+			else if (search) {
 				input.handleInput(data);
 				refilter();
 			}
@@ -364,7 +373,9 @@ type PickerUi = Pick<ExtensionContext["ui"], "select"> & Partial<Pick<ExtensionC
 
 /**
  * Pick one item: the terminal-sized picker in the TUI, Pi's plain select
- * elsewhere (RPC mode cannot draw custom components). Undefined on cancel.
+ * elsewhere (RPC mode cannot draw custom components). Plain select always
+ * opens on its first option, so there the initial item is listed first.
+ * Undefined on cancel.
  */
 export async function pickItem(
 	ui: PickerUi,
@@ -372,10 +383,11 @@ export async function pickItem(
 	title: string,
 	items: readonly PickerItem[],
 	initialValue: string | undefined,
+	options: PickerOptions = {},
 ): Promise<string | undefined> {
 	if (tui && ui.custom) {
 		return ui.custom<string | undefined>((host, theme, _keybindings, done) => {
-			const picker = createPicker(title, items, initialValue, theme, () => host.terminal.rows, done);
+			const picker = createPicker(title, items, initialValue, theme, () => host.terminal.rows, done, options);
 			return {
 				get focused() {
 					return picker.focused;
@@ -392,7 +404,9 @@ export async function pickItem(
 			};
 		});
 	}
-	const label = await ui.select(title, items.map((item) => item.label));
+	const initial = items.filter((item) => item.value === initialValue);
+	const ordered = [...initial, ...items.filter((item) => item.value !== initialValue)];
+	const label = await ui.select(title, ordered.map((item) => item.label));
 	return items.find((item) => item.label === label)?.value;
 }
 
@@ -426,6 +440,7 @@ export async function configureInteractively(
 		`session-recap: recap model [${currentModel ?? "automatic"}]`,
 		modelItems,
 		currentModel ?? AUTOMATIC_MODEL,
+		{ search: true },
 	);
 	if (modelPick === undefined) return undefined;
 	if (modelPick === AUTOMATIC_MODEL) {
@@ -435,10 +450,13 @@ export async function configureInteractively(
 		next.model = { provider: modelPick.slice(0, slash), model: modelPick.slice(slash + 1) };
 	}
 
-	const thinkingPick = await ui.select(`session-recap: thinking [${current.thinking ?? "off"}]`, [
-		"off",
-		...RECAP_THINKING_LEVELS,
-	]);
+	const thinkingPick = await pickItem(
+		ui,
+		tui,
+		`session-recap: thinking [${current.thinking ?? "off"}]`,
+		["off", ...RECAP_THINKING_LEVELS].map((level) => ({ value: level, label: level })),
+		current.thinking ?? "off",
+	);
 	if (thinkingPick === "off") delete next.thinking;
 	else if (thinkingPick !== undefined) next.thinking = thinkingPick as RecapThinking;
 
@@ -469,13 +487,19 @@ export async function configureInteractively(
 		on: string,
 		off: string,
 	) => {
-		const onLabel = `on — ${on}`;
-		const answer = await ui.select(`session-recap: ${title} [${(current[key] ?? fallback) ? "on" : "off"}]`, [
-			onLabel,
-			`off — ${off}`,
-		]);
+		const currentValue = current[key] ?? fallback;
+		const answer = await pickItem(
+			ui,
+			tui,
+			`session-recap: ${title} [${currentValue ? "on" : "off"}]`,
+			[
+				{ value: "on", label: `on — ${on}` },
+				{ value: "off", label: `off — ${off}` },
+			],
+			currentValue ? "on" : "off",
+		);
 		if (answer === undefined) return;
-		const value = answer === onLabel;
+		const value = answer === "on";
 		if (value === fallback) delete next[key];
 		else next[key] = value;
 	};

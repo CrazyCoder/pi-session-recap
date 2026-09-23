@@ -447,3 +447,48 @@ test("/recap-config warns about overriding flags and a low cap with thinking on"
 		"a thinking warning, then the one overriding flag; --recap-disable-focus overrides no setting",
 	);
 });
+
+// Every choice set away from its default, so a dialog that opens on its first
+// option would change something when Enter is pressed.
+const nonDefaults = {
+	model: { provider: "openrouter", model: "google/gemini-3-flash" },
+	thinking: "high",
+	awaySeconds: 30,
+	autoRecap: false,
+	recapOnResume: false,
+	duringActive: true,
+	maxTokens: 512,
+};
+
+test("pressing Enter through every TUI dialog keeps the settings", async () => {
+	const openedOn = [];
+	const ui = {
+		select: async () => assert.fail("the TUI must use the picker, which opens on the current value"),
+		input: async () => "",
+		notify: () => assert.fail("nothing to warn about"),
+		custom: (factory) =>
+			new Promise((resolve) => {
+				const host = { terminal: { rows: 24 }, requestRender() {} };
+				const component = factory(host, { fg: (_c, t) => t, bold: (t) => t }, {}, resolve);
+				openedOn.push(component.render(100).find((line) => line.startsWith("→ ")));
+				component.handleInput("\r");
+			}),
+	};
+	assert.deepEqual(await configureInteractively(ui, available, nonDefaults, true), nonDefaults);
+	assert.deepEqual(openedOn, [
+		"→ openrouter/google/gemini-3-flash ✓",
+		"→ high ✓",
+		"→ off — only /recap draws a recap ✓",
+		"→ off — no recap on /resume or /fork ✓",
+		"→ on — draft an away recap mid-turn ✓",
+	]);
+});
+
+test("pressing Enter through every select outside the TUI keeps the settings", async () => {
+	const ui = {
+		select: async (_title, options) => options[0],
+		input: async () => "",
+		notify: () => assert.fail("nothing to warn about"),
+	};
+	assert.deepEqual(await configureInteractively(ui, available, nonDefaults, false), nonDefaults);
+});

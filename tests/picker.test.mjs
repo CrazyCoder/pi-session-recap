@@ -15,9 +15,17 @@ const items = Array.from({ length: 100 }, (_, i) => {
 	return { value: label, label };
 });
 
-function open(initialValue, rows = 24) {
+function open(initialValue, rows = 24, search = true) {
 	const results = [];
-	const picker = createPicker("Pick a model", items, initialValue, theme, () => rows, (value) => results.push(value));
+	const picker = createPicker(
+		"Pick a model",
+		items,
+		initialValue,
+		theme,
+		() => rows,
+		(value) => results.push(value),
+		{ search },
+	);
 	const type = (...keys) => keys.forEach((key) => picker.handleInput(key));
 	const selectedLine = () => picker.render(80).find((line) => line.startsWith("→ "));
 	return { picker, results, type, selectedLine };
@@ -81,7 +89,7 @@ test("Escape and Ctrl+C cancel; Enter on no match does nothing", () => {
 	const empty = open();
 	empty.type("z", "z", "z", ENTER);
 	assert.deepEqual(empty.results, []);
-	assert.ok(empty.picker.render(80).includes("  No matching models"));
+	assert.ok(empty.picker.render(80).includes("  No matches"));
 });
 
 test("pickItem uses the picker in the TUI", async () => {
@@ -97,7 +105,10 @@ test("pickItem uses the picker in the TUI", async () => {
 				component.handleInput(ENTER);
 			}),
 	};
-	assert.equal(await pickItem(ui, true, "Pick", items, "provider-0/model-0"), "provider-1/model-1");
+	assert.equal(
+		await pickItem(ui, true, "Pick", items, "provider-0/model-0", { search: true }),
+		"provider-1/model-1",
+	);
 	assert.equal(rendered[0].length, 6 + pickerVisibleRows(24));
 });
 
@@ -114,4 +125,31 @@ test("pickItem falls back to select outside the TUI", async () => {
 	assert.deepEqual(asked, [100]);
 	const cancelled = { select: async () => undefined };
 	assert.equal(await pickItem(cancelled, true, "Pick", items, undefined), undefined);
+});
+
+test("without search there is no search line and typing is ignored", () => {
+	const { picker, type, selectedLine, results } = open("provider-2/model-82", 24, false);
+	const lines = picker.render(80);
+	assert.equal(lines.length, 5 + pickerVisibleRows(24), "one line shorter than the searchable picker");
+	assert.ok(!lines.some((line) => line.startsWith("> ")), "no search line");
+	assert.ok(!lines.some((line) => line.includes("type to search")), "the hint does not offer search");
+	type("7", "7");
+	assert.equal(selectedLine(), "→ provider-2/model-82 ✓", "typed characters neither filter nor move");
+	assert.deepEqual(results, []);
+});
+
+test("select outside the TUI lists the initial item first, so Enter keeps it", async () => {
+	const shown = [];
+	const ui = {
+		select: async (_title, options) => {
+			shown.push(options);
+			return options[0];
+		},
+	};
+	const choices = [
+		{ value: "on", label: "on — yes" },
+		{ value: "off", label: "off — no" },
+	];
+	assert.equal(await pickItem(ui, false, "Toggle", choices, "off"), "off");
+	assert.deepEqual(shown[0], ["off — no", "on — yes"]);
 });

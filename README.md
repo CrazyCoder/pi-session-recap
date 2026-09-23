@@ -122,10 +122,11 @@ For a local checkout, run `npm ci` in this repository, then run `pi install .`.
 
 Run `/recap-config` for a guided walkthrough of every setting. It opens with a
 model picker over all available models: type to search, and the list scrolls
-inside a window sized to the terminal, starting on the saved model. It then asks
-for each value in turn. The current value is shown in brackets. An empty or
-cancelled answer keeps it. Cancelling the first dialog discards the whole
-walkthrough.
+inside a window sized to the terminal. It then asks for each value in turn. The
+current value is shown in brackets, and every choice opens on it, so pressing
+Enter through the whole walkthrough changes nothing. An empty or cancelled
+answer keeps the current value too. Cancelling the first dialog discards the
+whole walkthrough.
 
 The settings are saved to `~/.pi/agent/session-recap.json`, in the directory
 named by `PI_CODING_AGENT_DIR` when that is set. They apply at once in the
