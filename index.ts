@@ -3,9 +3,12 @@
  * See README.md for triggers, flags, and model selection.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Api, Message, Model as AiModel } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
+	getAgentDir,
 	type ContextEditEntry,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -43,6 +46,7 @@ const POST_TURN_DEBOUNCE_MS = 3000;
 const NEEDS_EXPLICIT_REASONING_OFF = new Set(["openai-codex-responses"]);
 
 const RECENT_MESSAGE_WINDOW = 30;
+const DEFAULT_MAX_TOKENS = 256;
 const MIN_ASSISTANT_WORDS = 30;
 const INITIAL_TASK_EDGE_CHARS = 4000;
 const TOOL_RESULT_EDGE_CHARS = 2000;
@@ -52,6 +56,301 @@ const FOCUS_ENABLE = "\x1b[?1004h";
 const FOCUS_DISABLE = "\x1b[?1004l";
 const FOCUS_IN_SEQ = "\x1b[I";
 const FOCUS_OUT_SEQ = "\x1b[O";
+
+// ---------------------------------------------------------------------------
+// Configuration: `<agent dir>/session-recap.json`, written by `/recap-config`.
+// Command-line flags override it for one launch.
+// ---------------------------------------------------------------------------
+
+const CONFIG_FILE = "session-recap.json";
+const RECAP_THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
+type RecapThinking = (typeof RECAP_THINKING_LEVELS)[number];
+
+type IntegerRange = readonly [min: number, max: number];
+const SECONDS_RANGE: IntegerRange = [5, 86_400];
+const RECENT_MESSAGES_RANGE: IntegerRange = [1, 200];
+const MAX_TOKENS_RANGE: IntegerRange = [64, 8192];
+
+export interface RecapConfig {
+	/** Recap model. Absent selects automatically (see `selectRecapModel`). */
+	model?: { provider: string; model: string };
+	/** Reasoning level for the recap request. Absent means reasoning off. */
+	thinking?: RecapThinking;
+	awaySeconds?: number;
+	idleSeconds?: number;
+	/** Automatic recaps: away timer, turn end while away, idle fallback. */
+	autoRecap?: boolean;
+	/** Recap automatically on `/resume` and `/fork`. */
+	recapOnResume?: boolean;
+	duringActive?: boolean;
+	/** Recent conversation messages sent with the recap request. */
+	recentMessages?: number;
+	/** Output token cap for the recap response. */
+	maxTokens?: number;
+}
+
+/** Configuration after flags and defaults are applied. */
+export interface RecapSettings {
+	/** `provider/id`, or undefined for automatic selection. */
+	model?: string;
+	thinking?: RecapThinking;
+	awaySeconds: number;
+	idleSeconds: number;
+	autoRecap: boolean;
+	recapOnResume: boolean;
+	duringActive: boolean;
+	focusReporting: boolean;
+	recentMessages: number;
+	maxTokens: number;
+}
+
+type FlagReader = (name: string) => boolean | string | undefined;
+
+export function configPath(): string {
+	return join(getAgentDir(), CONFIG_FILE);
+}
+
+const isIntegerInRange = (value: unknown, [min, max]: IntegerRange): value is number =>
+	typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+
+/** Validate a parsed config file. Invalid or unknown settings are dropped with a warning. */
+export function parseConfig(raw: unknown): { config: RecapConfig; warnings: string[] } {
+	const config: RecapConfig = {};
+	const warnings: string[] = [];
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+		return { config, warnings: ["the file is not a JSON object; using defaults"] };
+	}
+	for (const [key, value] of Object.entries(raw)) {
+		const invalid = (expected: string) => warnings.push(`${key} must be ${expected}; ignoring it`);
+		const integer = (range: IntegerRange) => {
+			if (isIntegerInRange(value, range)) return value;
+			invalid(`an integer from ${range[0]} to ${range[1]}`);
+			return undefined;
+		};
+		switch (key) {
+			case "model": {
+				const model = value as { provider?: unknown; model?: unknown } | null;
+				if (
+					model !== null &&
+					typeof model === "object" &&
+					typeof model.provider === "string" &&
+					model.provider.length > 0 &&
+					typeof model.model === "string" &&
+					model.model.length > 0
+				) {
+					config.model = { provider: model.provider, model: model.model };
+				} else {
+					invalid('{ "provider": "...", "model": "..." }');
+				}
+				break;
+			}
+			case "thinking":
+				if (typeof value === "string" && (RECAP_THINKING_LEVELS as readonly string[]).includes(value)) {
+					config.thinking = value as RecapThinking;
+				} else {
+					invalid(`one of ${RECAP_THINKING_LEVELS.join(", ")}`);
+				}
+				break;
+			case "awaySeconds":
+			case "idleSeconds":
+				config[key] = integer(SECONDS_RANGE);
+				break;
+			case "recentMessages":
+				config.recentMessages = integer(RECENT_MESSAGES_RANGE);
+				break;
+			case "maxTokens":
+				config.maxTokens = integer(MAX_TOKENS_RANGE);
+				break;
+			case "autoRecap":
+			case "recapOnResume":
+			case "duringActive":
+				if (typeof value === "boolean") config[key] = value;
+				else invalid("true or false");
+				break;
+			default:
+				warnings.push(`unknown setting ${key}; ignoring it`);
+		}
+	}
+	for (const key of Object.keys(config) as Array<keyof RecapConfig>) {
+		if (config[key] === undefined) delete config[key];
+	}
+	return { config, warnings };
+}
+
+/**
+ * Read the config file. A missing file is an empty config. `unreadable` marks a
+ * file that exists but cannot be read or parsed, which `/recap-config` must not
+ * overwrite.
+ */
+export function loadConfig(path = configPath()): {
+	config: RecapConfig;
+	warnings: string[];
+	unreadable?: true;
+} {
+	if (!existsSync(path)) return { config: {}, warnings: [] };
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf-8"));
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		return { config: {}, warnings: [`cannot read ${path}: ${reason}`], unreadable: true };
+	}
+	const { config, warnings } = parseConfig(raw);
+	return { config, warnings: warnings.map((warning) => `${path}: ${warning}`) };
+}
+
+export function saveConfig(config: RecapConfig, path = configPath()): void {
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+/** Apply command-line flags over the config file, and defaults under both. */
+export function resolveSettings(config: RecapConfig, getFlag: FlagReader): RecapSettings {
+	const flagSeconds = (name: string): number | undefined => {
+		const value = getFlag(name);
+		if (value === undefined || value === "") return undefined;
+		const seconds = Number(value);
+		return Number.isFinite(seconds) ? Math.max(SECONDS_RANGE[0], seconds) : undefined;
+	};
+	const flagModel = String(getFlag("recap-model") ?? "").trim();
+	return {
+		model: flagModel || (config.model ? `${config.model.provider}/${config.model.model}` : undefined),
+		thinking: config.thinking,
+		awaySeconds: flagSeconds("recap-away-seconds") ?? config.awaySeconds ?? DEFAULT_AWAY_SECONDS,
+		idleSeconds: flagSeconds("recap-idle-seconds") ?? config.idleSeconds ?? DEFAULT_IDLE_SECONDS,
+		autoRecap: getFlag("recap-disable") ? false : (config.autoRecap ?? true),
+		recapOnResume: config.recapOnResume ?? true,
+		duringActive: getFlag("recap-during-active") ? true : (config.duringActive ?? false),
+		focusReporting: !getFlag("recap-disable-focus"),
+		recentMessages: config.recentMessages ?? RECENT_MESSAGE_WINDOW,
+		maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+	};
+}
+
+const OVERRIDE_FLAGS = [
+	"recap-model",
+	"recap-away-seconds",
+	"recap-idle-seconds",
+	"recap-disable",
+	"recap-during-active",
+] as const;
+
+function activeOverrideFlags(getFlag: FlagReader): string[] {
+	return OVERRIDE_FLAGS.filter((name) => {
+		const value = getFlag(name);
+		return value !== undefined && value !== false && value !== "";
+	}).map((name) => `--${name}`);
+}
+
+type ConfigUi = Pick<ExtensionContext["ui"], "select" | "input" | "notify">;
+
+const AUTOMATIC_MODEL =
+	"automatic — Claude Haiku 4.5 on Anthropic, GPT-5.6 Luna on GPT, else the session model";
+
+/**
+ * Walk through every setting with Pi dialogs. Returns the complete new config,
+ * or undefined when the first dialog is cancelled. Cancelling or leaving a
+ * later answer empty keeps that setting. Settings equal to their default are
+ * left out of the file.
+ */
+export async function configureInteractively(
+	ui: ConfigUi,
+	available: ReadonlyArray<{ provider: string; id: string }>,
+	current: RecapConfig,
+): Promise<RecapConfig | undefined> {
+	const next: RecapConfig = { ...current };
+
+	const currentModel = current.model ? `${current.model.provider}/${current.model.model}` : "automatic";
+	const modelPick = await ui.select(`session-recap: recap model [${currentModel}]`, [
+		AUTOMATIC_MODEL,
+		...available.map((model) => `${model.provider}/${model.id}`),
+	]);
+	if (modelPick === undefined) return undefined;
+	if (modelPick === AUTOMATIC_MODEL) {
+		delete next.model;
+	} else {
+		const slash = modelPick.indexOf("/");
+		next.model = { provider: modelPick.slice(0, slash), model: modelPick.slice(slash + 1) };
+	}
+
+	const thinkingPick = await ui.select(`session-recap: thinking [${current.thinking ?? "off"}]`, [
+		"off",
+		...RECAP_THINKING_LEVELS,
+	]);
+	if (thinkingPick === "off") delete next.thinking;
+	else if (thinkingPick !== undefined) next.thinking = thinkingPick as RecapThinking;
+
+	const askInteger = async (
+		key: "awaySeconds" | "idleSeconds" | "recentMessages" | "maxTokens",
+		title: string,
+		range: IntegerRange,
+		fallback: number,
+	) => {
+		const shown = current[key] ?? fallback;
+		const answer = (await ui.input(`session-recap: ${title} [${shown}]`, String(shown)))?.trim();
+		if (!answer) return;
+		const value = Number(answer);
+		if (!isIntegerInRange(value, range)) {
+			ui.notify(
+				`session-recap: ${title} must be an integer from ${range[0]} to ${range[1]}; keeping ${shown}`,
+				"warning",
+			);
+			return;
+		}
+		if (value === fallback) delete next[key];
+		else next[key] = value;
+	};
+	const askToggle = async (
+		key: "autoRecap" | "recapOnResume" | "duringActive",
+		title: string,
+		fallback: boolean,
+		on: string,
+		off: string,
+	) => {
+		const onLabel = `on — ${on}`;
+		const answer = await ui.select(`session-recap: ${title} [${(current[key] ?? fallback) ? "on" : "off"}]`, [
+			onLabel,
+			`off — ${off}`,
+		]);
+		if (answer === undefined) return;
+		const value = answer === onLabel;
+		if (value === fallback) delete next[key];
+		else next[key] = value;
+	};
+
+	await askInteger("awaySeconds", "seconds away before a recap", SECONDS_RANGE, DEFAULT_AWAY_SECONDS);
+	await askInteger(
+		"idleSeconds",
+		"idle seconds before a recap on terminals without focus reporting",
+		SECONDS_RANGE,
+		DEFAULT_IDLE_SECONDS,
+	);
+	await askToggle(
+		"autoRecap",
+		"automatic recaps",
+		true,
+		"recap when you have been away",
+		"only /recap draws a recap",
+	);
+	await askToggle(
+		"recapOnResume",
+		"recap on /resume and /fork",
+		true,
+		"recap the session you resume or fork",
+		"no recap on /resume or /fork",
+	);
+	await askToggle(
+		"duringActive",
+		"recap while the agent is running",
+		false,
+		"draft an away recap mid-turn",
+		"wait until the agent finishes",
+	);
+	await askInteger("recentMessages", "recent messages sent with the request", RECENT_MESSAGES_RANGE, RECENT_MESSAGE_WINDOW);
+	await askInteger("maxTokens", "recap output token cap", MAX_TOKENS_RANGE, DEFAULT_MAX_TOKENS);
+
+	return next;
+}
 
 function extractText(content: Message["content"]): string {
 	if (typeof content === "string") return content;
@@ -80,6 +379,7 @@ function findInitialTask(entries: SessionEntry[]): string | undefined {
 export function buildRecapContext(
 	entries: ProjectedSessionEntry[],
 	branchEntries: SessionEntry[],
+	recentWindow = RECENT_MESSAGE_WINDOW,
 ): RecapContext {
 	let summary: string | undefined;
 	for (const { sourceEntry, messages } of entries) {
@@ -105,7 +405,7 @@ export function buildRecapContext(
 			}),
 		};
 	});
-	let start = Math.max(0, messages.length - RECENT_MESSAGE_WINDOW);
+	let start = Math.max(0, messages.length - recentWindow);
 	while (start > 0 && messages[start].role === "toolResult") start--;
 	let recentMessages = messages.slice(start);
 	if (recentMessages[0]?.role === "assistant") {
@@ -182,10 +482,10 @@ export function selectRecapModel(
 async function generateRecap(
 	recapContext: RecapContext,
 	ctx: ExtensionContext,
-	overrideSpec: string | undefined,
+	settings: Pick<RecapSettings, "model" | "thinking" | "maxTokens">,
 	signal: AbortSignal | undefined,
 ): Promise<string | undefined> {
-	const model = selectRecapModel(ctx.model, overrideSpec, ctx.modelRegistry);
+	const model = selectRecapModel(ctx.model, settings.model, ctx.modelRegistry);
 	if (!model) return undefined;
 
 	// Ambient-auth providers can succeed without returning an API key.
@@ -214,18 +514,20 @@ async function generateRecap(
 	const options = {
 		signal,
 		cacheRetention: "none" as const,
-		maxTokens: 256,
+		maxTokens: settings.maxTokens,
 	};
 
 	// Dispatch through Pi's model runtime rather than pi-ai's standalone
 	// `complete*`: the runtime resolves request auth and runs provider overrides
 	// that extensions register, such as the OAuth request shaping an Anthropic
-	// subscription needs. Recaps never need reasoning; skipping it keeps each
-	// away-timer fire cheap.
-	const response = await (NEEDS_EXPLICIT_REASONING_OFF.has(model.api)
-		? ctx.modelRegistry.stream(model, context, { ...options, reasoningEffort: "none" })
-		: ctx.modelRegistry.streamSimple(model, context, options)
-	).result();
+	// subscription needs. Reasoning stays off unless `thinking` is configured,
+	// which keeps each away-timer fire cheap.
+	const request = settings.thinking
+		? ctx.modelRegistry.streamSimple(model, context, { ...options, reasoning: settings.thinking })
+		: NEEDS_EXPLICIT_REASONING_OFF.has(model.api)
+			? ctx.modelRegistry.stream(model, context, { ...options, reasoningEffort: "none" })
+			: ctx.modelRegistry.streamSimple(model, context, options);
+	const response = await request.result();
 
 	// pi-ai resolves instead of throwing when a stream fails, is aborted, or stops
 	// at the token cap: the message it hands back then holds only the text that
@@ -294,37 +596,36 @@ export function showRecap(ctx: ExtensionContext, recap: string) {
 }
 
 export default function (pi: ExtensionAPI) {
+	// No flag declares a default: an unset flag must read as undefined so the
+	// config file applies beneath it.
 	pi.registerFlag("recap-away-seconds", {
-		description: "Seconds of continuous terminal blur before an away recap is generated",
+		description: `Seconds of continuous terminal blur before an away recap is generated (default ${DEFAULT_AWAY_SECONDS})`,
 		type: "string",
-		default: String(DEFAULT_AWAY_SECONDS),
 	});
 	pi.registerFlag("recap-idle-seconds", {
-		description:
-			"Idle-fallback: seconds after turn_end before a recap when the terminal doesn't report focus",
+		description: `Idle-fallback: seconds after turn_end before a recap when the terminal doesn't report focus (default ${DEFAULT_IDLE_SECONDS})`,
 		type: "string",
-		default: String(DEFAULT_IDLE_SECONDS),
 	});
 	pi.registerFlag("recap-disable-focus", {
 		description: "Disable DECSET ?1004 focus reporting (idle fallback still runs)",
 		type: "boolean",
-		default: false,
 	});
 	pi.registerFlag("recap-during-active", {
 		description: "Allow away recaps while an agent turn is still running",
 		type: "boolean",
-		default: false,
 	});
 	pi.registerFlag("recap-disable", {
 		description: "Disable the automatic session recap",
 		type: "boolean",
-		default: false,
 	});
 	pi.registerFlag("recap-model", {
-		description: "Override automatic model selection, e.g. anthropic/claude-sonnet-4-6",
+		description: "Override the recap model, e.g. anthropic/claude-sonnet-4-6",
 		type: "string",
-		default: "",
 	});
+
+	let config: RecapConfig = {};
+	const getFlag: FlagReader = (name) => pi.getFlag(name);
+	const settings = (): RecapSettings => resolveSettings(config, getFlag);
 
 	let idleTimer: NodeJS.Timeout | undefined;
 	let awayTimer: NodeJS.Timeout | undefined;
@@ -338,11 +639,7 @@ export default function (pi: ExtensionAPI) {
 	let focusEventsSeen = false;
 	let lastDraftedContext: string | undefined;
 
-	const flagMilliseconds = (name: string, fallback: number): number => {
-		const seconds = Number(pi.getFlag(name) ?? fallback);
-		return Math.max(5, Number.isFinite(seconds) ? seconds : fallback) * 1000;
-	};
-	const isDisabled = (): boolean => Boolean(pi.getFlag("recap-disable"));
+	const isDisabled = (): boolean => !settings().autoRecap;
 
 	const clearIdleTimer = () => {
 		if (idleTimer) {
@@ -373,7 +670,12 @@ export default function (pi: ExtensionAPI) {
 		const projection = ctx.sessionManager.buildSessionProjection();
 		if (reason !== "manual" && !hasMeaningfulActivity(projection.entries)) return;
 
-		const recapContext = buildRecapContext(projection.entries, ctx.sessionManager.getBranch());
+		const current = settings();
+		const recapContext = buildRecapContext(
+			projection.entries,
+			ctx.sessionManager.getBranch(),
+			current.recentMessages,
+		);
 		if (recapContext.messages.length === 0 && !recapContext.broaderContext) return;
 
 		const startContext = JSON.stringify(recapContext);
@@ -387,12 +689,12 @@ export default function (pi: ExtensionAPI) {
 		if (showStatus) ctx.ui.setStatus(RECAP_KEY, ctx.ui.theme.fg("dim", "✦ drafting recap…"));
 
 		try {
-			const override = String(pi.getFlag("recap-model") ?? "").trim() || undefined;
-			const recap = await generateRecap(recapContext, ctx, override, controller.signal);
+			const recap = await generateRecap(recapContext, ctx, current, controller.signal);
 			if (!recap || controller.signal.aborted) return;
 			const currentContext = buildRecapContext(
 				ctx.sessionManager.buildSessionProjection().entries,
 				ctx.sessionManager.getBranch(),
+				current.recentMessages,
 			);
 			if (JSON.stringify(currentContext) !== startContext) return;
 
@@ -419,7 +721,7 @@ export default function (pi: ExtensionAPI) {
 
 	const tryAwayRecap = (ctx: ExtensionContext) => {
 		if (isDisabled() || !ctx.hasUI || !isBlurred) return;
-		if (agentActive && !pi.getFlag("recap-during-active")) {
+		if (agentActive && !settings().duringActive) {
 			awayRecapPending = true;
 			return;
 		}
@@ -435,7 +737,7 @@ export default function (pi: ExtensionAPI) {
 		awayTimer = setTimeout(() => {
 			awayTimer = undefined;
 			tryAwayRecap(ctx);
-		}, flagMilliseconds("recap-away-seconds", DEFAULT_AWAY_SECONDS));
+		}, settings().awaySeconds * 1000);
 	};
 
 	const handleFocusIn = () => {
@@ -449,7 +751,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const attachFocusReporting = (ctx: ExtensionContext) => {
-		if (focusEnabled || pi.getFlag("recap-disable-focus") || !ctx.hasUI) return;
+		if (focusEnabled || !settings().focusReporting || !ctx.hasUI) return;
 		if (!process.stdout.isTTY || !process.stdin.isTTY) return;
 
 		try {
@@ -514,7 +816,7 @@ export default function (pi: ExtensionAPI) {
 			idleTimer = setTimeout(() => {
 				idleTimer = undefined;
 				if (!focusEventsSeen) void generateAndShow(ctx, "idle");
-			}, flagMilliseconds("recap-idle-seconds", DEFAULT_IDLE_SECONDS));
+			}, settings().idleSeconds * 1000);
 		}
 	});
 
@@ -560,8 +862,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (event, ctx) => {
+		const loaded = loadConfig();
+		config = loaded.config;
+		if (ctx.hasUI) {
+			for (const warning of loaded.warnings) ctx.ui.notify(`session-recap: ${warning}`, "warning");
+		}
 		attachFocusReporting(ctx);
-		if (isDisabled() || !ctx.hasUI) return;
+		if (isDisabled() || !settings().recapOnResume || !ctx.hasUI) return;
 		if (event.reason === "resume" || event.reason === "fork") {
 			setTimeout(() => {
 				void generateAndShow(ctx, "resume");
@@ -572,5 +879,49 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("recap", {
 		description: "Generate a recap of recent session activity",
 		handler: (_args, ctx) => generateAndShow(ctx, "manual"),
+	});
+
+	pi.registerCommand("recap-config", {
+		description: "Configure session-recap: model, thinking, delays, triggers and request size",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) return;
+			const loaded = loadConfig();
+			if (loaded.unreadable) {
+				ctx.ui.notify(
+					`session-recap: ${loaded.warnings.join("; ")}. Fix or delete the file, then run /recap-config again.`,
+					"error",
+				);
+				return;
+			}
+			const next = await configureInteractively(ctx.ui, ctx.modelRegistry.getAvailable(), loaded.config);
+			if (!next) return;
+			try {
+				saveConfig(next);
+			} catch (err) {
+				const reason = err instanceof Error ? err.message : String(err);
+				ctx.ui.notify(`session-recap: cannot save ${configPath()}: ${reason}`, "error");
+				return;
+			}
+			config = next;
+
+			const model = selectRecapModel(ctx.model, settings().model, ctx.modelRegistry);
+			const uses = model ? `${model.provider}/${model.id}` : "the session model";
+			ctx.ui.notify(`session-recap: saved ${configPath()}. Recaps in this session use ${uses}.`, "info");
+			if (next.thinking && (next.maxTokens ?? DEFAULT_MAX_TOKENS) < 1024) {
+				// Anthropic budgets add thinking on top of the cap; OpenAI reasoning is
+				// drawn from it, and a response cut off at the cap is discarded.
+				ctx.ui.notify(
+					"session-recap: on OpenAI models reasoning tokens count toward the output cap. Raise it if recaps stop appearing.",
+					"warning",
+				);
+			}
+			const overrides = activeOverrideFlags(getFlag);
+			if (overrides.length > 0) {
+				ctx.ui.notify(
+					`session-recap: ${overrides.join(", ")} on the command line still override the saved settings.`,
+					"warning",
+				);
+			}
+		},
 	});
 }

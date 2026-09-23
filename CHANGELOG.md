@@ -1,6 +1,16 @@
 # Changelog
 
-## [0.5.3] - 2026-09-22
+## [0.6.0] - 2026-09-22
+
+### Added
+
+- Add `/recap-config`, a guided walkthrough that saves settings to
+  `~/.pi/agent/session-recap.json`: recap model, thinking level, away and idle
+  delays, automatic recaps, recaps on `/resume` and `/fork`, recaps while the
+  agent runs, recent messages sent, and the output token cap. Command-line flags
+  override the file for one launch.
+- Allow reasoning for recaps through the `thinking` setting. It stays off by
+  default.
 
 ### Fixed
 
