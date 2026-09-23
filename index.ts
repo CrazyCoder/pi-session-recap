@@ -270,9 +270,9 @@ function activeOverrideFlags(getFlag: FlagReader): string[] {
 
 // ---------------------------------------------------------------------------
 // Picker for every choice in /recap-config. Pi's `ui.select` always opens on
-// its first option, so pressing Enter through the dialogs changed settings,
-// and it draws every option, so a long model list scrolls the terminal itself
-// and hides the selection. Pi's own model selector needs its internal
+// its first option, so pressing Enter through the dialogs would change
+// settings, and it draws every option, so a long model list scrolls the
+// terminal itself and hides the selection. Pi's own model selector needs its internal
 // ModelRuntime, which extensions cannot reach.
 // ---------------------------------------------------------------------------
 

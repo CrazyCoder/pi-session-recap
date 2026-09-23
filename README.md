@@ -154,7 +154,7 @@ default.
 | Setting | Default | Description |
 | -- | -- | -- |
 | `model` | automatic | `{ "provider", "model" }`. Automatic selection is described in [Model](#model). A model that cannot be found falls back to the session model. |
-| `thinking` | off | `minimal`, `low`, `medium` or `high`. Reasoning gets its own token allowance, so `maxTokens` needs no change; see below. |
+| `thinking` | off | `minimal`, `low`, `medium` or `high`. Reasoning gets its own token allowance, so `maxTokens` needs no change; see `maxTokens`. |
 | `awaySeconds` | `90` | Seconds of continuous terminal blur before an away recap is generated. 5 to 86400. |
 | `idleSeconds` | `120` | Idle-fallback delay after `turn_end`, used only when the terminal doesn't report focus. 5 to 86400. |
 | `autoRecap` | `true` | Automatic recaps. With `false`, only `/recap` draws a recap. |
