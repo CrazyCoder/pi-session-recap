@@ -72,7 +72,9 @@ The recap reuses the active provider's authentication and chooses a cheaper
 model when available:
 
 1. `--recap-model`, or the `model` setting from [Configure](#configure).
-2. `anthropic/claude-haiku-4-5` for Anthropic sessions.
+2. `claude-haiku-4-5` for Anthropic sessions, and for sessions on a native
+   Claude model id (`claude-...`) whose provider also offers `claude-haiku-4-5`,
+   such as an Anthropic-compatible proxy.
 3. GPT-5.6 Luna when the active model is GPT and its provider offers Luna.
 4. The currently active model otherwise.
 

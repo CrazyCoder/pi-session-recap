@@ -35,6 +35,15 @@ for (const [provider, activeId, lunaId] of [
 	});
 }
 
+test("Claude sessions on an Anthropic-compatible proxy use its Claude Haiku 4.5", () => {
+	const active = model("meridian", "claude-opus-5");
+	const haiku = model("meridian", "claude-haiku-4-5");
+	assert.equal(select(active, [haiku]), haiku);
+	assert.equal(select(active, []), active, "a proxy without Haiku keeps the active model");
+	const other = model("meridian", "deepseek-v4-flash");
+	assert.equal(select(other, [haiku]), other, "a non-Claude session on the same provider keeps its model");
+});
+
 test("non-GPT sessions keep the active model outside Anthropic", () => {
 	const active = model("openrouter", "anthropic/claude-opus-4.6");
 	const haiku = model("openrouter", "anthropic/claude-haiku-4.5");

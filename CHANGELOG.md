@@ -12,6 +12,13 @@
 - Allow reasoning for recaps through the `thinking` setting. It stays off by
   default.
 
+### Changed
+
+- Use Claude Haiku 4.5 for recaps of any session on a native Claude model id
+  (`claude-...`) whose provider offers `claude-haiku-4-5`, not only on the
+  `anthropic` provider. Anthropic-compatible proxies such as Meridian now get
+  the cheaper model too.
+
 ### Fixed
 
 - Send recap requests through Pi's model runtime (`ctx.modelRegistry`) instead
