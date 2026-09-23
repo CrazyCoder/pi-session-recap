@@ -35,6 +35,24 @@ test("fullscreen recap is temporary transcript content", () => {
 	assert.equal(document.children.length, 3);
 });
 
+test("RPC mode, which never calls widget factories, gets the above-editor recap", () => {
+	const widgets = [];
+	const ui = {
+		theme: { fg: (_name, text) => text, bold: (text) => text },
+		setWidget(key, content, options) {
+			if (typeof content !== "function") widgets.push({ key, content, options });
+		},
+	};
+	showRecap({ ui }, "Temporary recap text.");
+	assert.deepEqual(widgets, [
+		{
+			key: "session-recap",
+			content: ["✦ recap", "Temporary recap text."],
+			options: { placement: "aboveEditor" },
+		},
+	]);
+});
+
 test("regular mode keeps the above-editor recap", () => {
 	const { ctx, document, widgets } = createUi("regular");
 	showRecap(ctx, "Temporary recap text.");

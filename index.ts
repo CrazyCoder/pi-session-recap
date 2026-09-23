@@ -567,19 +567,21 @@ export function showRecap(ctx: ExtensionContext, recap: string) {
 	const theme = ctx.ui.theme;
 	const header = theme.fg("accent", theme.bold("✦ recap"));
 	const body = theme.fg("dim", recap);
-	let tui!: TUI;
+	const mounted: { tui?: TUI } = {};
 	ctx.ui.setWidget(
 		RECAP_KEY,
 		(candidate) => {
-			tui = candidate;
+			mounted.tui = candidate;
 			return new Container();
 		},
 		{ placement: "belowEditor" },
 	);
 
-	// Pi mounts the scrollable document as its first TUI child.
-	const document = tui.children[0];
-	if (tui.mode !== "fullscreen" || !(document instanceof Container)) {
+	// RPC mode never calls widget factories, so `tui` stays unset there. Pi
+	// mounts the scrollable document as its first TUI child.
+	const tui = mounted.tui;
+	const document = tui?.children[0];
+	if (!tui || tui.mode !== "fullscreen" || !(document instanceof Container)) {
 		ctx.ui.setWidget(RECAP_KEY, [header, body], { placement: "aboveEditor" });
 		return;
 	}
