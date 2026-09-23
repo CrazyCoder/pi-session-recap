@@ -155,7 +155,7 @@ default.
 | `awaySeconds` | `90` | Seconds of continuous terminal blur before an away recap is generated. 5 to 86400. |
 | `idleSeconds` | `120` | Idle-fallback delay after `turn_end`, used only when the terminal doesn't report focus. 5 to 86400. |
 | `autoRecap` | `true` | Automatic recaps. With `false`, only `/recap` draws a recap. |
-| `recapOnResume` | `true` | Recap automatically on `/resume` and `/fork`. |
+| `recapOnResume` | `true` | Recap automatically on `/resume` and `/fork`. Needs `autoRecap`. |
 | `duringActive` | `false` | Draft an away recap while an agent turn is still running, instead of waiting for the turn to end. |
 | `recentMessages` | `30` | Recent conversation messages sent with the recap request. 1 to 200. |
 | `maxTokens` | `256` | Output token cap for the recap response. 64 to 8192. |

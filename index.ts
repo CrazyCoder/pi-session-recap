@@ -85,7 +85,7 @@ export interface RecapConfig {
 	idleSeconds?: number;
 	/** Automatic recaps: away timer, turn end while away, idle fallback. */
 	autoRecap?: boolean;
-	/** Recap automatically on `/resume` and `/fork`. */
+	/** Recap automatically on `/resume` and `/fork`. Needs `autoRecap`. */
 	recapOnResume?: boolean;
 	duringActive?: boolean;
 	/** Recent conversation messages sent with the recap request. */

@@ -221,7 +221,7 @@ test("an out-of-range answer warns and keeps the current value", async () => {
 	assert.ok(notices.every(([, type]) => type === "warning"));
 });
 
-function makePi() {
+function makePi(flagValues = {}) {
 	const commands = new Map();
 	const handlers = new Map();
 	return {
@@ -234,8 +234,8 @@ function makePi() {
 			commands.set(name, command);
 		},
 		registerFlag() {},
-		getFlag() {
-			return undefined;
+		getFlag(name) {
+			return flagValues[name];
 		},
 	};
 }
@@ -415,8 +415,7 @@ test("session_start loads the file and reports its warnings", async () => {
 });
 
 test("/recap-config refuses to overwrite a file it cannot parse", async () => {
-	const path = configFile;
-	writeFileSync(path, "{ not json");
+	writeFileSync(configFile, "{ not json");
 	const pi = makePi();
 	sessionRecap(pi);
 	const notices = [];
@@ -426,5 +425,25 @@ test("/recap-config refuses to overwrite a file it cannot parse", async () => {
 	await pi.commands.get("recap-config").handler("", ctx);
 	assert.equal(asked.length, 0);
 	assert.equal(notices[0][1], "error");
-	assert.equal(readFileSync(path, "utf-8"), "{ not json");
+	assert.equal(readFileSync(configFile, "utf-8"), "{ not json");
+});
+
+test("/recap-config warns about overriding flags and a low cap with thinking on", async () => {
+	rmSync(configFile, { force: true });
+	const pi = makePi({ "recap-model": "anthropic/claude-sonnet-5", "recap-disable-focus": true });
+	sessionRecap(pi);
+	const notices = [];
+	const { ui } = scriptedUi([pick("automatic"), "low", "", "", undefined, undefined, undefined, "", ""]);
+	const ctx = makeCtx({ ...ui, notify: (message, type) => notices.push([message, type]) }, []);
+
+	await pi.commands.get("recap-config").handler("", ctx);
+	assert.match(notices[0][0], /Recaps in this session use anthropic\/claude-sonnet-5/, "the flag decides the model");
+	assert.deepEqual(
+		notices.slice(1).map(([message, type]) => [message.replace(/^session-recap: /, "").split(" ")[0], type]),
+		[
+			["on", "warning"],
+			["--recap-model", "warning"],
+		],
+		"a thinking warning, then the one overriding flag; --recap-disable-focus overrides no setting",
+	);
 });
